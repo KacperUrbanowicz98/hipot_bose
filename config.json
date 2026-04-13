@@ -1,0 +1,25 @@
+{
+    "users": {
+        "12101333": {
+            "name": "Kacper Urbanowicz",
+            "role": "engineer"
+        }
+    },
+    "serial": {
+        "port": "COM11",
+        "baudrate": 9600,
+        "timeout": 3
+    },
+    "profiles": {
+        "1": {
+            "name": "Standard 2.5kV",
+            "type": "ACW",
+            "voltage": 2.5,
+            "hi_limit": 2.43,
+            "lo_limit": 1.0,
+            "ramp": 1.0,
+            "dwell": 3.0,
+            "frequency": 0
+        }
+    }
+}
