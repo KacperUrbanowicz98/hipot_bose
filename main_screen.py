@@ -1,15 +1,18 @@
 import threading
 import customtkinter as ctk
-from config import COLORS, load_config
+from config import COLORS, load_config, resolve_profile_for_sn
 from hipot_controller import HipotController
+
 
 class MainScreen(ctk.CTkFrame):
     def __init__(self, parent, hrid: str, user: dict, on_logout):
         super().__init__(parent, fg_color=COLORS["bg"])
-        self.hrid      = hrid
-        self.user      = user
+        self.hrid = hrid
+        self.user = user
         self.on_logout = on_logout
-        self._running  = False
+        self._running = False
+        self._active_profile = None
+        self._active_profile_key = None
         self._build()
 
     def _build(self):
@@ -26,14 +29,14 @@ class MainScreen(ctk.CTkFrame):
         header.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
-            header, text="⚡  HiPot Tester",
+            header, text="⚡ HiPot Tester",
             font=ctk.CTkFont(size=15, weight="bold"),
             text_color=COLORS["text"]
         ).grid(row=0, column=0, padx=20, pady=14)
 
         ctk.CTkLabel(
             header,
-            text=f"👤  {self.user['name']}   |   {self.hrid}   |   {self.user['role'].upper()}",
+            text=f"👤 {self.user['name']} | {self.hrid} | {self.user['role'].upper()}",
             font=ctk.CTkFont(size=12),
             text_color=COLORS["muted"]
         ).grid(row=0, column=1, padx=20)
@@ -65,15 +68,17 @@ class MainScreen(ctk.CTkFrame):
             height=42, corner_radius=8,
             border_color=COLORS["border"]
         )
-        self.sn_entry.grid(row=1, column=0, sticky="ew", pady=(0, 20))
+        self.sn_entry.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         self.sn_entry.bind("<Return>", lambda e: self._start_test())
+        self.sn_entry.bind("<KeyRelease>", lambda e: self._on_sn_change())
 
-        ctk.CTkLabel(
+        self.profile_label = ctk.CTkLabel(
             body,
-            text="Profil: Standard 3kV  (ACW, 3.00 kV, 0.5–4.0 mA, ramp 1s, dwell 2s)",
+            text="Profil: —",
             font=ctk.CTkFont(size=12),
             text_color=COLORS["muted"], anchor="w"
-        ).grid(row=2, column=0, sticky="w", pady=(0, 20))
+        )
+        self.profile_label.grid(row=2, column=0, sticky="w", pady=(0, 20))
 
         self.result_label = ctk.CTkLabel(
             body, text="—",
@@ -87,11 +92,11 @@ class MainScreen(ctk.CTkFrame):
         details.grid_columnconfigure((0, 1, 2), weight=1)
 
         self.volt_lbl = self._detail_cell(details, "Napięcie", "—", 0)
-        self.curr_lbl = self._detail_cell(details, "Prąd",     "—", 1)
-        self.time_lbl = self._detail_cell(details, "Czas",     "—", 2)
+        self.curr_lbl = self._detail_cell(details, "Prąd", "—", 1)
+        self.time_lbl = self._detail_cell(details, "Czas", "—", 2)
 
         self.test_btn = ctk.CTkButton(
-            body, text="▶  START TEST",
+            body, text="▶ START TEST",
             font=ctk.CTkFont(size=16, weight="bold"),
             height=52, corner_radius=10,
             fg_color=COLORS["primary"],
@@ -132,60 +137,95 @@ class MainScreen(ctk.CTkFrame):
         self.curr_lbl.configure(text="—")
         self.time_lbl.configure(text="—")
 
+    def _on_sn_change(self):
+        sn = self.sn_entry.get().strip()
+        if len(sn) < 6:
+            self.profile_label.configure(
+                text="Profil: —",
+                text_color=COLORS["muted"]
+            )
+            self._active_profile = None
+            self._active_profile_key = None
+            return
+
+        key, profile = resolve_profile_for_sn(sn)
+
+        if profile:
+            self._active_profile_key = key
+            self._active_profile = profile
+            name = profile.get("name", key)
+            v    = profile.get("voltage")
+            hi   = profile.get("hi_limit")
+            lo   = profile.get("lo_limit")
+            dw   = profile.get("dwell")
+            self.profile_label.configure(
+                text=f"✔ {name}  |  {v} kV  |  {lo}–{hi} mA  |  dwell {dw}s",
+                text_color=COLORS["primary"]
+            )
+        else:
+            self._active_profile = None
+            self._active_profile_key = None
+            self.profile_label.configure(
+                text="❌ Nieznany SN — brak profilu",
+                text_color=COLORS["fail"]
+            )
+
     def _start_test(self):
         sn = self.sn_entry.get().strip()
         if not sn:
-            self._set_status("⚠  Wprowadź numer seryjny.", COLORS["fail"])
+            self._set_status("⚠ Wprowadź numer seryjny.", COLORS["fail"])
+            return
+        if not self._active_profile:
+            self._set_status("⚠ Brak profilu dla tego SN.", COLORS["fail"])
             return
         if self._running:
             return
         self._running = True
-        self.test_btn.configure(state="disabled", text="⏳  Test w toku...")
+        self.test_btn.configure(state="disabled", text="⏳ Test w toku...")
         self._reset_display()
         self._set_status("Łączenie z HiPotem...", COLORS["primary"])
         threading.Thread(target=self._run_thread, args=(sn,), daemon=True).start()
 
     def _run_thread(self, sn):
-        config     = load_config()
+        config = load_config()
         serial_cfg = config.get("serial", {})
-        profile    = config.get("profiles", {}).get("1", {})
         ctrl = HipotController(
-            port=serial_cfg.get("port", "COM10"),
+            port=serial_cfg.get("port", "COM11"),
             baudrate=serial_cfg.get("baudrate", 9600),
             timeout=serial_cfg.get("timeout", 3)
         )
         try:
             ctrl.connect()
             self.after(0, self._set_status, "Test uruchomiony...", COLORS["primary"])
-            result = ctrl.run_test(profile)
+            result = ctrl.program_and_run(self._active_profile)
             self.after(0, self._show_result, sn, result)
         except Exception as e:
-            self.after(0, self._set_status, f"❌  {e}", COLORS["fail"])
+            self.after(0, self._set_status, f"❌ {e}", COLORS["fail"])
             self.after(0, self.result_label.configure,
                        {"text": "ERROR", "text_color": COLORS["fail"]})
         finally:
             ctrl.disconnect()
             self._running = False
             self.after(0, self.test_btn.configure,
-                       {"state": "normal", "text": "▶  START TEST"})
+                       {"state": "normal", "text": "▶ START TEST"})
 
     def _show_result(self, sn, r):
         error  = r.get("error")
         result = r.get("result", "")
         if error:
             self.result_label.configure(text="ERROR", text_color=COLORS["fail"])
-            self._set_status(f"❌  {error}", COLORS["fail"])
+            self._set_status(f"❌ {error}", COLORS["fail"])
             return
         if result == "Pass":
-            self.result_label.configure(text="✔  PASS", text_color=COLORS["success"])
-            self._set_status(f"✔  PASS  |  SN: {sn}", COLORS["success"])
+            self.result_label.configure(text="✔ PASS", text_color=COLORS["success"])
+            self._set_status(f"✔ PASS | SN: {sn}", COLORS["success"])
         elif result == "Fail":
-            self.result_label.configure(text="✘  FAIL", text_color=COLORS["fail"])
-            self._set_status(f"✘  FAIL  |  SN: {sn}", COLORS["fail"])
+            self.result_label.configure(text="✘ FAIL", text_color=COLORS["fail"])
+            self._set_status(f"✘ FAIL | SN: {sn}", COLORS["fail"])
         else:
             status = r.get("status", "").upper()
-            self.result_label.configure(text=f"⚠  {status}", text_color=COLORS["warning"])
-            self._set_status(f"⚠  {status}  |  SN: {sn}", COLORS["warning"])
+            self.result_label.configure(text=f"⚠ {status}", text_color=COLORS["warning"])
+            self._set_status(f"⚠ {status} | SN: {sn}", COLORS["warning"])
         self.volt_lbl.configure(text=f"{r.get('voltage', '—')} kV")
         self.curr_lbl.configure(text=f"{r.get('current', '—')} mA")
         self.time_lbl.configure(text=f"{r.get('time', '—')} s")
