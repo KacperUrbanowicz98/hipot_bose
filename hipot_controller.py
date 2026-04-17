@@ -5,11 +5,11 @@ import threading
 
 class HipotController:
     def __init__(self, port: str, baudrate: int = 9600, timeout: int = 3):
-        self.port     = port
+        self.port = port
         self.baudrate = baudrate
-        self.timeout  = timeout
-        self._serial  = None
-        self._lock    = threading.Lock()
+        self.timeout = timeout
+        self._serial = None
+        self._lock = threading.Lock()
 
     # ── Połączenie ─────────────────────────────────────────────────────────
     def connect(self):
@@ -28,7 +28,7 @@ class HipotController:
     def disconnect(self):
         if self._serial and self._serial.is_open:
             self._serial.close()
-        self._serial = None
+            self._serial = None
 
     @property
     def is_connected(self) -> bool:
@@ -36,7 +36,6 @@ class HipotController:
 
     # ── Komunikacja ────────────────────────────────────────────────────────
     def _send(self, command: str, wait: float = 0.6) -> bytes:
-        """Komenda sterująca — używa read_all(), drukuje debug."""
         with self._lock:
             self._serial.reset_input_buffer()
             self._serial.write((command.strip() + "\r\n").encode("ascii"))
@@ -46,7 +45,6 @@ class HipotController:
             return resp
 
     def _query(self, command: str, wait: float = 0.6) -> str:
-        """Komenda query — używa read_until(), zwraca string."""
         with self._lock:
             self._serial.reset_input_buffer()
             self._serial.write((command.strip() + "\r\n").encode("ascii"))
@@ -56,115 +54,170 @@ class HipotController:
             return raw.decode("ascii", errors="replace").strip()
 
     def _cmd(self, command: str, wait: float = 0.6) -> bool:
-        """Wysyła komendę, zwraca True jeśli ACK (0x06) w odpowiedzi."""
         resp = self._send(command, wait)
         return b'\x06' in resp
 
-    # ── Sekwencja testowa ──────────────────────────────────────────────────
-    def run_test(self, profile: dict = None, test_timeout: float = 20.0) -> dict:
-        """
-        Odpala gotowy profil 1 z pamięci urządzenia.
-        Aktualny profil na urządzeniu:
-            Memory 1 — ACW, 2.5 kV, HI 2.43 mA, LO 1.0 mA, ramp 1s, dwell 3s, 50Hz
-        """
+    def _read_result(self, result: dict) -> dict:
+        """Pobiera wynik z RD 1? i uzupełnia słownik result."""
+        raw = self._query("RD 1?", wait=0.5)
+        parts = [p.strip() for p in raw.split(",")]
+        print(f"RD 1? parts ({len(parts)}): {parts}")
+
+        if len(parts) >= 7:
+            verdict           = parts[3]
+            result["result"]  = verdict
+            result["voltage"] = parts[4]
+            result["current"] = parts[5]
+            result["time"]    = parts[6]
+            if verdict == "Pass":
+                result["status"] = "pass"
+            elif verdict == "Fail":
+                result["status"] = "fail"
+            else:
+                result["status"] = "done"
+        else:
+            result["raw_result"] = raw
+            result["result"]     = "Unknown"
+            result["status"]     = "done"
+
+        return result
+
+    # ── Wgraj parametry i uruchom test ─────────────────────────────────────
+    def program_and_run(self, profile: dict, test_timeout: float = 30.0) -> dict:
         result = {
-            "result":  None,
+            "result": None,
             "voltage": None,
             "current": None,
-            "time":    None,
-            "status":  "error",
-            "error":   None
+            "time": None,
+            "status": "error",
+            "error": None
         }
 
         try:
-            # 1. Reset na start — czysty stan
-            self._send("RESET", wait=0.3)
+            voltage   = profile.get("voltage",   3.0)   # kV
+            hi_limit  = profile.get("hi_limit",  10.0)  # mA
+            lo_limit  = profile.get("lo_limit",  0.0)   # mA
+            ramp      = profile.get("ramp",      1.0)   # s
+            dwell     = profile.get("dwell",     2.0)   # s
+            frequency = profile.get("frequency", 0)     # 0=60Hz, 1=50Hz
 
-            # 2. Włącz PLC Remote — wymagane do TEST przez RS-232
+            # 1. Reset
+            self._send("RESET", wait=0.4)
+
+            # 2. Remote ON
             if not self._cmd("SPR 1", wait=0.6):
                 result["error"] = "SPR 1 — brak ACK (PLC Remote ON)"
                 return result
 
-            # 3. Załaduj gotowy profil 1 z pamięci urządzenia
-            if not self._cmd("FL 1", wait=0.6):
-                result["error"] = "FL 1 — brak ACK"
+            # 3. Załaduj plik 1 i wybierz krok 1
+            if not self._cmd("FL 1", wait=0.3):
+                result["error"] = "FL 1 — brak ACK (File Load)"
                 return result
 
-            # 4. Start testu
-            if not self._cmd("TEST", wait=0.4):
+            if not self._cmd("SS 1", wait=0.3):
+                result["error"] = "SS 1 — brak ACK (Select Step)"
+                return result
+
+            # 4. Wgraj parametry
+            if not self._cmd(f"EV {voltage:.2f}", wait=0.3):
+                result["error"] = f"EV {voltage:.2f} — brak ACK (napięcie)"
+                return result
+
+            if not self._cmd(f"EH {hi_limit:.2f}", wait=0.3):
+                result["error"] = f"EH {hi_limit:.2f} — brak ACK (HI limit)"
+                return result
+
+            if not self._cmd(f"EL {lo_limit:.2f}", wait=0.3):
+                result["error"] = f"EL {lo_limit:.2f} — brak ACK (LO limit)"
+                return result
+
+            if not self._cmd(f"ERU {ramp:.1f}", wait=0.3):
+                result["error"] = f"ERU {ramp:.1f} — brak ACK (ramp)"
+                return result
+
+            if not self._cmd(f"EDW {dwell:.1f}", wait=0.3):
+                result["error"] = f"EDW {dwell:.1f} — brak ACK (dwell)"
+                return result
+
+            if not self._cmd(f"EF {frequency}", wait=0.3):
+                result["error"] = f"EF {frequency} — brak ACK (częstotliwość)"
+                return result
+
+            # 5. Start testu
+            if not self._cmd("TEST", wait=0.5):
                 result["error"] = "TEST — brak ACK"
                 return result
 
-            # 5. Czekaj na zakończenie przez *OPC? (polling co 1s)
-            deadline = time.time() + test_timeout
-            finished = False
+            # 6. Czekaj stały czas: ramp + dwell + 1.5s bufora
+            wait_time = ramp + dwell + 1.5
+            print(f"Czekam {wait_time:.1f}s na zakończenie testu...")
+            time.sleep(wait_time)
 
-            while time.time() < deadline:
-                time.sleep(1)
-                opc = self._query("*OPC?", wait=0.3)
-                if "1" in opc:
-                    finished = True
-                    break
-
-            if not finished:
-                result["status"] = "timeout"
-                result["error"]  = "Timeout — brak odpowiedzi *OPC? w czasie"
-                return result
-
-            # 6. Sprawdź status na podstawie RD 1? (STB? nie zawsze działa)
-            raw = self._query("RD 1?", wait=0.4)
-            parts = [p.strip() for p in raw.split(",")]
-
-            print(f"  RD 1? parts ({len(parts)}): {parts}")
-
-            if len(parts) >= 7:
-                result["result"] = parts[3]
-                result["voltage"] = parts[4]
-                result["current"] = parts[5]
-                result["time"] = parts[6]
-
-                if parts[3] == "Pass":
-                    result["status"] = "pass"
-                elif parts[3] == "Fail":
-                    result["status"] = "fail"
-                else:
-                    result["status"] = "done"
-            else:
-                result["raw_result"] = raw
-                result["status"] = "done"
-                result["result"] = "Unknown"
-
-            # 7. Odczytaj wynik kroku 1
-            raw   = self._query("RD 1?", wait=0.4)
-            parts = [p.strip() for p in raw.split(",")]
-
-            print(f"  RD 1? parts ({len(parts)}): {parts}")
-
-            if len(parts) >= 7:
-                result["result"] = parts[3]  # Pass / Fail  ← była 2
-                result["voltage"] = parts[4]  # 2.50 kV      ← była 3
-                result["current"] = parts[5]  # 1.82 mA      ← była 4
-                result["time"] = parts[6]  # 3.0 s         ← była 5
-            else:
-                # Fallback — RD 1? zwróciło niestandardowy format
-                result["raw_result"] = raw
-                if result["status"] == "pass":
-                    result["result"] = "Pass"
-                elif result["status"] == "fail":
-                    result["result"] = "Fail"
-                elif result["status"] == "abort":
-                    result["result"] = "Abort"
-                else:
-                    result["result"] = "Unknown"
-
-            return result
+            # 7. Pobierz wynik
+            return self._read_result(result)
 
         except Exception as e:
             result["error"] = str(e)
             return result
 
         finally:
-            # Zawsze wyłącz PLC Remote i zresetuj
+            try:
+                self._send("SPR 0", wait=0.3)
+            except Exception:
+                pass
+            try:
+                self._send("RESET", wait=0.3)
+            except Exception:
+                pass
+
+    # ── Fallback: uruchom profil z pamięci urządzenia ──────────────────────
+    def run_test(self, profile: dict = None, test_timeout: float = 20.0) -> dict:
+        """
+        Odpala gotowy profil 1 z pamięci urządzenia (FL 1).
+        Fallback gdy program_and_run nie działa.
+        """
+        result = {
+            "result": None,
+            "voltage": None,
+            "current": None,
+            "time": None,
+            "status": "error",
+            "error": None
+        }
+
+        try:
+            ramp  = 1.0
+            dwell = 2.0
+            if profile:
+                ramp  = profile.get("ramp",  ramp)
+                dwell = profile.get("dwell", dwell)
+
+            self._send("RESET", wait=0.3)
+
+            if not self._cmd("SPR 1", wait=0.6):
+                result["error"] = "SPR 1 — brak ACK (PLC Remote ON)"
+                return result
+
+            if not self._cmd("FL 1", wait=0.6):
+                result["error"] = "FL 1 — brak ACK"
+                return result
+
+            if not self._cmd("TEST", wait=0.4):
+                result["error"] = "TEST — brak ACK"
+                return result
+
+            # Czekaj stały czas: ramp + dwell + 1.5s bufora
+            wait_time = ramp + dwell + 1.5
+            print(f"Czekam {wait_time:.1f}s na zakończenie testu...")
+            time.sleep(wait_time)
+
+            return self._read_result(result)
+
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+
+        finally:
             try:
                 self._send("SPR 0", wait=0.3)
             except Exception:
