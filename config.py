@@ -29,10 +29,6 @@ def save_config(config: dict):
         json.dump(config, f, indent=4, ensure_ascii=False)
 
 def resolve_profile_for_sn(sn: str) -> tuple:
-    """
-    Bierze pierwsze 6 znaków SN, szuka w sn_prefix_map,
-    zwraca (profile_key, profile_dict) lub (None, None).
-    """
     config = load_config()
     sn_map = config.get("sn_prefix_map", {})
     profiles = config.get("profiles", {})
