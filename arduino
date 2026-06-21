@@ -1,0 +1,73 @@
+#define RELAY_PIN D1
+#define WATCHDOG_TIMEOUT_MS 5000  // 5s bez komendy → wróć na HIPOT (bezpieczna pozycja)
+
+String command    = "";
+String relayState = "HIPOT";      // aktualny stan — startujemy zawsze na HIPOT
+unsigned long lastCmdTime = 0;
+bool watchdogEnabled = false;
+
+void setRelay(String state) {
+  if (state == "PE") {
+    digitalWrite(RELAY_PIN, HIGH);
+    relayState = "PE";
+  } else {
+    digitalWrite(RELAY_PIN, LOW);
+    relayState = "HIPOT";
+  }
+}
+
+void setup() {
+  pinMode(RELAY_PIN, OUTPUT);
+  setRelay("HIPOT");   // bezpieczna pozycja na starcie
+
+  Serial.begin(115200);
+  Serial.println("READY");        // Python czeka na ten string po connect
+  Serial.println("STATE:HIPOT");  // Python od razu zna stan
+}
+
+void loop() {
+
+  // ── Watchdog ────────────────────────────────────────────────────────────
+  if (watchdogEnabled && (millis() - lastCmdTime > WATCHDOG_TIMEOUT_MS)) {
+    if (relayState != "HIPOT") {
+      setRelay("HIPOT");
+      Serial.println("WATCHDOG:TIMEOUT→HIPOT");
+    }
+    watchdogEnabled = false;
+  }
+
+  // ── Odbiór komend ────────────────────────────────────────────────────────
+  if (Serial.available()) {
+    command = Serial.readStringUntil('\n');
+    command.trim();
+
+    lastCmdTime     = millis();
+    watchdogEnabled = true;
+
+    if (command == "PE") {
+      setRelay("PE");
+      Serial.println("OK:PE");           // potwierdzenie + stan
+
+    } else if (command == "HIPOT") {
+      setRelay("HIPOT");
+      Serial.println("OK:HIPOT");
+
+    } else if (command == "STATUS?") {
+      Serial.print("STATE:");
+      Serial.println(relayState);        // np. "STATE:HIPOT" lub "STATE:PE"
+
+    } else if (command == "PING") {
+      lastCmdTime     = millis();        // odśwież watchdog bez zmiany stanu
+      watchdogEnabled = true;
+      Serial.println("PONG");
+
+    } else if (command == "WATCHDOG:OFF") {
+      watchdogEnabled = false;
+      Serial.println("OK:WATCHDOG_OFF");
+
+    } else {
+      Serial.print("ERR:UNKNOWN:");
+      Serial.println(command);
+    }
+  }
+}
