@@ -59,6 +59,18 @@ def query(ser, cmd, wait=0.6):
     return result
 
 
+# ── NOWE: surowy odczyt bajty (dla RD N? który może zwrócić NAK bez \n) ───
+def query_raw(ser, cmd, wait=1.0):
+    """Wysyła zapytanie, czeka wait sekund, zwraca surowe bajty i string."""
+    ser.reset_input_buffer()
+    ser.write((cmd.strip() + "\r\n").encode("ascii"))
+    time.sleep(wait)
+    raw_bytes = ser.read_all()
+    raw_str   = raw_bytes.decode("ascii", errors="replace").strip()
+    print(f"  {cmd:<22} → raw_bytes={raw_bytes!r}  decoded={raw_str!r}")
+    return raw_bytes, raw_str
+
+
 def cmd_ok(ser, command, wait=0.6, label=None):
     """Zwraca True jeśli dostał ACK (0x06)."""
     resp = send(ser, command, wait, label)
@@ -120,7 +132,7 @@ def phase_setup(ser, skip_sag=False):
 def phase_verify_params(ser):
     """Odczyt wgranych parametrów przez LS (Load Step query)."""
     divider("FAZA 3: Weryfikacja wgranych parametrów (LS 2?)")
-    raw = query(ser, f"LS {STEP}?", wait=0.6)
+    raw = query(ser, f"LS {STEP}?", wait=1.0)
     if raw:
         print(f"  Parametry kroku {STEP}: {raw}")
     else:
@@ -150,10 +162,52 @@ def phase_test(ser):
 
 def phase_result(ser):
     divider(f"FAZA 5: Odczyt wyniku RD {STEP}?")
-    raw   = query(ser, f"RD {STEP}?", wait=0.5)
+
+    # ── ZMIANA 1: sprawdź status SA? przed odczytem wyniku ────────────────
+    print("  [pre-check] SA? po teście:")
+    send(ser, "SA?", wait=0.6, label="SA? (post-test)")
+
+    # ── ZMIANA 2: query_raw z wait=1.0 (zamiast query z wait=0.5) ─────────
+    raw_bytes, raw = query_raw(ser, f"RD {STEP}?", wait=1.0)
+
+    # ── ZMIANA 3: obsługa NAK jako osobny przypadek ────────────────────────
+    if b'\x15' in raw_bytes and len(raw_bytes) <= 3:
+        print(f"\n  ⚠ NAK na RD {STEP}? — tester nie ma wyniku dla kroku {STEP}")
+        print("    Możliwe przyczyny:")
+        print("    • Test ukończony bez DUT — brak rzeczywistego pomiaru")
+        print("    • Tester zresetował wynik przed odczytem")
+        print("    • Spróbuj uruchomić z podłączonym DUT (kabel CURRENT OUTPUT↔RETURN)")
+        print()
+
+        # ── ZMIANA 4: fallback — spróbuj RD? (globalny, ostatni wynik) ───
+        print("  [fallback] Próbuję RD? (globalny ostatni wynik)...")
+        fb_bytes, fb_str = query_raw(ser, "RD?", wait=0.8)
+        if b'\x15' not in fb_bytes and fb_str:
+            print(f"  RD? zwrócił: {fb_str!r}")
+            _parse_gnd_result(fb_str)
+        else:
+            print("  RD? również NAK — brak zapisanego wyniku w testerze")
+
+        # ── ZMIANA 5: spróbuj też RD 1? (krok 1, gdyby step był inny) ────
+        print()
+        print("  [fallback] Próbuję RD 1? (krok 1)...")
+        fb1_bytes, fb1_str = query_raw(ser, "RD 1?", wait=0.8)
+        if b'\x15' not in fb1_bytes and fb1_str:
+            print(f"  RD 1? zwrócił: {fb1_str!r}")
+        else:
+            print("  RD 1? również NAK")
+        return
+
+    # ── Normalny parsing ───────────────────────────────────────────────────
+    _parse_gnd_result(raw)
+
+
+def _parse_gnd_result(raw):
+    """Parser wyniku Ground Bond. Obsługuje formaty z 6+ polami."""
     parts = [p.strip() for p in raw.split(",")]
     print(f"  Pola ({len(parts)}): {parts}")
 
+    # Format spodziewany: GND,<step>,<Pass|Fail>,<resistance_mΩ>,<current_A>,<time_s>
     if len(parts) >= 6:
         verdict    = parts[2]
         resistance = parts[3]
@@ -178,9 +232,30 @@ def phase_result(ser):
             except ValueError:
                 pass
             print("  → Sprawdź podłączenie DUT i kabel prądowy (CURRENT OUTPUT)")
+
+    # ── ZMIANA 6: fallback dla formatu bez pola typu (np. "2,Pass,15.3,...") ──
+    elif len(parts) >= 5:
+        print("  [uwaga] Format bez prefiksu GND — próbuję offset o 1 pole wcześniej")
+        verdict    = parts[1]
+        resistance = parts[2]
+        current    = parts[3]
+        t          = parts[4]
+
+        print(f"\n  ┌─ WYNIK Ground Bond (alt. format) {'─'*16}")
+        print(f"  │  Verdict:     {verdict}")
+        print(f"  │  Rezystancja: {resistance} mΩ")
+        print(f"  │  Prąd:        {current} A")
+        print(f"  │  Czas:        {t} s")
+        print(f"  └{'─'*40}")
+
+        if verdict == "Pass":
+            print("\n  ✔✔ PASS ✔✔")
+        else:
+            print("\n  ✘✘ FAIL ✘✘")
+
     else:
-        print(f"\n  ⚠ Nieoczekiwany format RD {STEP}?: {raw!r}")
-        print("  → Format może być inny niż zakładamy — wklej ten output żebyśmy mogli poprawić parser")
+        print(f"\n  ⚠ Nieoczekiwany format wyniku: {raw!r}")
+        print("  → Wklej ten output — poprawimy parser pod konkretny format testera")
 
 
 def cleanup(ser):

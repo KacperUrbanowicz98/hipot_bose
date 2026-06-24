@@ -6,9 +6,10 @@
         }
     },
     "serial": {
-        "port": "COM3",
+        "port": "COM11",
         "baudrate": 9600,
-        "timeout": 3
+        "timeout": 3,
+        "relay_port": "COM4"
     },
     "profiles": {
         "3KV": {
@@ -19,7 +20,8 @@
             "lo_limit": 0.5,
             "ramp": 1.0,
             "dwell": 2.0,
-            "frequency": 0
+            "frequency": 0,
+            "ground_bond": null
         },
         "2_5KV": {
             "name": "2.5 kV — Bass Module 300 / Bass Module 700",
@@ -29,7 +31,26 @@
             "lo_limit": 1.0,
             "ramp": 1.0,
             "dwell": 3.0,
-            "frequency": 0
+            "frequency": 0,
+            "ground_bond": null
+        },
+        "1_5KV": {
+            "name": "1.5 kV — F1 Model 812 / F1 Subwoofer / L1",
+            "type": "ACW",
+            "voltage": 1.5,
+            "hi_limit": 5.0,
+            "lo_limit": 0.0,
+            "ramp": 0.5,
+            "dwell": 1.0,
+            "frequency": 0,
+            "ground_bond": {
+                "current": 25.0,
+                "hi_limit": 100,
+                "lo_limit": 0,
+                "dwell": 1.0,
+                "offset": 0,
+                "frequency": 1
+            }
         }
     },
     "sn_prefix_map": {
