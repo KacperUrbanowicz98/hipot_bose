@@ -1,8 +1,9 @@
 #define RELAY_PIN D1
-#define WATCHDOG_TIMEOUT_MS 5000  // 5s bez komendy → wróć na HIPOT (bezpieczna pozycja)
+#define CHECK_PIN D3                   // pin zwrotny — NO + GND
+#define WATCHDOG_TIMEOUT_MS 5000       // 5s bez komendy → auto HIPOT
 
 String command    = "";
-String relayState = "HIPOT";      // aktualny stan — startujemy zawsze na HIPOT
+String relayState = "HIPOT";
 unsigned long lastCmdTime = 0;
 bool watchdogEnabled = false;
 
@@ -16,27 +17,36 @@ void setRelay(String state) {
   }
 }
 
+bool verifyRelay(String expectedState) {
+  delay(100);  // chwila na mechaniczne przełączenie
+  int pinVal = digitalRead(CHECK_PIN);
+  if (expectedState == "PE")    return pinVal == LOW;   // NO zamknięty → GND zwarte → LOW
+  if (expectedState == "HIPOT") return pinVal == HIGH;  // NO otwarty → PULLUP → HIGH
+  return false;
+}
+
 void setup() {
   pinMode(RELAY_PIN, OUTPUT);
+  pinMode(CHECK_PIN, INPUT_PULLUP);
   setRelay("HIPOT");   // bezpieczna pozycja na starcie
 
   Serial.begin(115200);
-  Serial.println("READY");        // Python czeka na ten string po connect
-  Serial.println("STATE:HIPOT");  // Python od razu zna stan
+  Serial.println("READY");
+  Serial.println("STATE:HIPOT");
 }
 
 void loop() {
 
-  // ── Watchdog ────────────────────────────────────────────────────────────
+  // ── Watchdog ─────────────────────────────────────────────────────────────
   if (watchdogEnabled && (millis() - lastCmdTime > WATCHDOG_TIMEOUT_MS)) {
     if (relayState != "HIPOT") {
       setRelay("HIPOT");
-      Serial.println("WATCHDOG:TIMEOUT→HIPOT");
+      Serial.println("WATCHDOG:TIMEOUT->HIPOT");
     }
     watchdogEnabled = false;
   }
 
-  // ── Odbiór komend ────────────────────────────────────────────────────────
+  // ── Odbiór komend ─────────────────────────────────────────────────────────
   if (Serial.available()) {
     command = Serial.readStringUntil('\n');
     command.trim();
@@ -46,18 +56,27 @@ void loop() {
 
     if (command == "PE") {
       setRelay("PE");
-      Serial.println("OK:PE");           // potwierdzenie + stan
+      if (verifyRelay("PE")) {
+        Serial.println("OK:PE");
+      } else {
+        setRelay("HIPOT");           // wróć bezpiecznie jeśli błąd fizyczny
+        Serial.println("ERR:RELAY_FAIL:PE");
+      }
 
     } else if (command == "HIPOT") {
       setRelay("HIPOT");
-      Serial.println("OK:HIPOT");
+      if (verifyRelay("HIPOT")) {
+        Serial.println("OK:HIPOT");
+      } else {
+        Serial.println("ERR:RELAY_FAIL:HIPOT");
+      }
 
     } else if (command == "STATUS?") {
       Serial.print("STATE:");
-      Serial.println(relayState);        // np. "STATE:HIPOT" lub "STATE:PE"
+      Serial.println(relayState);       // "STATE:HIPOT" lub "STATE:PE"
 
     } else if (command == "PING") {
-      lastCmdTime     = millis();        // odśwież watchdog bez zmiany stanu
+      lastCmdTime     = millis();
       watchdogEnabled = true;
       Serial.println("PONG");
 

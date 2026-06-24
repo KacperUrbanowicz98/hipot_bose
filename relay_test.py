@@ -15,7 +15,7 @@ import serial.tools.list_ports
 import time
 import argparse
 
-PORT     = "COM5"    # ← zmień na port ESP8266 (CH340/CP2102)
+PORT     = "COM3"    # ← zmień na port ESP8266 (CH340/CP2102)
 BAUDRATE = 115200
 TIMEOUT  = 3
 
