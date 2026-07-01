@@ -13,7 +13,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("HiPot Tester — Bose Production")
-        self.geometry("620x520")
+        self.geometry("820x720")
         self.resizable(False, False)
         self.configure(fg_color=COLORS["bg"])
         self._d_count     = 0

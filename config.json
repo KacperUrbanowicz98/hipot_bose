@@ -8,7 +8,9 @@
     "serial": {
         "port": "COM3",
         "baudrate": 9600,
-        "timeout": 3
+        "timeout": 3,
+        "relay_port": "COM7",
+        "relay_baudrate": 115200
     },
     "profiles": {
         "3KV": {
@@ -19,7 +21,8 @@
             "lo_limit": 0.5,
             "ramp": 1.0,
             "dwell": 2.0,
-            "frequency": 0
+            "frequency": 0,
+            "ground_bond": null
         },
         "2_5KV": {
             "name": "2.5 kV — Bass Module 300 / Bass Module 700",
@@ -29,7 +32,26 @@
             "lo_limit": 1.0,
             "ramp": 1.0,
             "dwell": 3.0,
-            "frequency": 0
+            "frequency": 0,
+            "ground_bond": null
+        },
+        "1_5KV_GND": {
+            "name": "1.5 kV + Ground Bond",
+            "type": "ACW",
+            "voltage": 1.5,
+            "hi_limit": 4.0,
+            "lo_limit": 0.0,
+            "ramp": 1.0,
+            "dwell": 2.0,
+            "frequency": 0,
+            "ground_bond": {
+                "current": 25.0,
+                "hi_limit": 100,
+                "lo_limit": 0,
+                "dwell": 1.0,
+                "offset": 0,
+                "frequency": 1
+            }
         }
     },
     "sn_prefix_map": {
@@ -60,6 +82,20 @@
         "074305": "2_5KV",
         "073868": "2_5KV",
         "078742": "2_5KV",
-        "077357": "2_5KV"
+        "077357": "2_5KV",
+        "067584": "1_5KV_GND",
+        "067585": "1_5KV_GND",
+        "067583": "1_5KV_GND",
+        "068319": "1_5KV_GND",
+        "050546": "1_5KV_GND",
+        "082026": "1_5KV_GND",
+        "082011": "1_5KV_GND",
+        "082007": "1_5KV_GND",
+        "041547": "1_5KV_GND",
+        "048895": "1_5KV_GND",
+        "082021": "1_5KV_GND",
+        "082016": "1_5KV_GND",
+        "058306": "1_5KV_GND",
+        "058305": "1_5KV_GND"
     }
 }
