@@ -1,0 +1,23 @@
+# Sekrety
+.env
+
+# Wirtualne środowisko
+.venv/
+venv/
+
+# Cache Pythona
+__pycache__/
+*.pyc
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# IDE
+.idea/
+.vscode/
+
+# Logi i dane lokalne
+*.log
+*.csv
