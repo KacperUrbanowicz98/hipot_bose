@@ -28,7 +28,6 @@ class MainScreen(ctk.CTkFrame):
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        # ── Nagłówek ───────────────────────────────────────────────────────
         header = ctk.CTkFrame(
             self,
             fg_color=COLORS["surface"],
@@ -66,7 +65,6 @@ class MainScreen(ctk.CTkFrame):
             command=self.on_logout,
         ).grid(row=0, column=2, padx=20)
 
-        # ── Body ───────────────────────────────────────────────────────────
         body = ctk.CTkFrame(self, fg_color=COLORS["bg"])
         body.grid(row=1, column=0, sticky="nsew", padx=32, pady=24)
         body.grid_columnconfigure(0, weight=1)
@@ -100,7 +98,6 @@ class MainScreen(ctk.CTkFrame):
         )
         self.profile_label.grid(row=2, column=0, sticky="w", pady=(0, 20))
 
-        # ── Wynik główny ───────────────────────────────────────────────────
         self.result_label = ctk.CTkLabel(
             body,
             text="—",
@@ -109,7 +106,6 @@ class MainScreen(ctk.CTkFrame):
         )
         self.result_label.grid(row=3, column=0, pady=(0, 8))
 
-        # ── Szczegóły HiPot ────────────────────────────────────────────────
         details = ctk.CTkFrame(body, fg_color=COLORS["card"], corner_radius=10)
         details.grid(row=4, column=0, sticky="ew", pady=(0, 8))
         details.grid_columnconfigure((0, 1, 2), weight=1)
@@ -118,7 +114,6 @@ class MainScreen(ctk.CTkFrame):
         self.curr_lbl = self._detail_cell(details, "Prąd", "—", 1)
         self.time_lbl = self._detail_cell(details, "Czas", "—", 2)
 
-        # ── Szczegóły Ground Bond ──────────────────────────────────────────
         self.gnd_frame = ctk.CTkFrame(body, fg_color=COLORS["card"], corner_radius=10)
         self.gnd_frame.grid(row=5, column=0, sticky="ew", pady=(0, 16))
         self.gnd_frame.grid_columnconfigure((0, 1, 2), weight=1)
@@ -143,7 +138,6 @@ class MainScreen(ctk.CTkFrame):
         self.gnd_curr_lbl = self._detail_cell(self.gnd_frame, "Prąd", "—", 1)
         self.gnd_time_lbl = self._detail_cell(self.gnd_frame, "Czas", "—", 2)
 
-        # ── Przyciski START / ABORT ────────────────────────────────────────
         btn_row = ctk.CTkFrame(body, fg_color="transparent")
         btn_row.grid(row=6, column=0, sticky="ew")
         btn_row.grid_columnconfigure(0, weight=1)
@@ -287,11 +281,6 @@ class MainScreen(ctk.CTkFrame):
         ).start()
 
     def _abort_test(self):
-        """
-        Ustawia flagę przerwania.
-        Uwaga: obecny HipotController nie przerywa fizycznie testu w środku komendy,
-        więc abort zostanie obsłużony po powrocie z run_full_sequence().
-        """
         self._abort.set()
         self.abort_btn.configure(state="disabled", text="⏹ Przerywanie...")
         self._set_status(
@@ -302,6 +291,10 @@ class MainScreen(ctk.CTkFrame):
     def _run_thread(self, sn: str):
         config = load_config()
         serial_cfg = config.get("serial", {})
+        integrations_cfg = config.get("integrations", {})
+
+        ted_enabled = integrations_cfg.get("ted_enabled", False)
+        ted_db_type = integrations_cfg.get("ted_db_type", "TEST")
 
         ctrl = HipotController(
             port=serial_cfg.get("port", "COM11"),
@@ -349,30 +342,37 @@ class MainScreen(ctk.CTkFrame):
             operator = f"{self.hrid} {self.user.get('name', '')}".strip()
             profile_key = self._active_profile_key or ""
 
-            ted_status = {"ok": False, "error": "TED nie został uruchomiony"}
+            ted_status = {
+                "ok": False,
+                "skipped": True,
+                "error": "",
+                "message": "TED disabled in config",
+            }
             csv_path = ""
 
-            try:
-                payload = build_hipot_payload(
-                    sn=sn,
-                    operator=operator,
-                    profile_key=profile_key,
-                    hipot=hipot_result,
-                    gnd=gnd_result,
-                    start_time=test_start,
-                    end_time=test_end,
-                    csv_path="",
-                )
+            if ted_enabled:
+                try:
+                    payload = build_hipot_payload(
+                        sn=sn,
+                        operator=operator,
+                        profile_key=profile_key,
+                        hipot=hipot_result,
+                        gnd=gnd_result,
+                        start_time=test_start,
+                        end_time=test_end,
+                        csv_path="",
+                    )
 
-                # Na razie wysyłamy do tabel testowych TED.
-                # Produkcja dopiero po potwierdzeniu z IT: db_type=""
-                ted_status = send_to_ted(payload, db_type="TEST")
+                    ted_status = send_to_ted(payload, db_type=ted_db_type)
 
-            except Exception as e:
-                ted_status = {
-                    "ok": False,
-                    "error": f"Błąd przygotowania/wysyłki TED: {e}",
-                }
+                except Exception as e:
+                    ted_status = {
+                        "ok": False,
+                        "skipped": False,
+                        "error": f"Błąd przygotowania/wysyłki TED: {e}",
+                    }
+            else:
+                print("TED disabled in config — zapis tylko lokalny CSV.")
 
             try:
                 csv_path = save_csv_result(
@@ -414,7 +414,6 @@ class MainScreen(ctk.CTkFrame):
             self.after(0, self._restore_ui)
 
     def _restore_ui(self):
-        """Przywraca UI po zakończeniu lub przerwaniu testu."""
         self.test_btn.configure(state="normal", text="▶ START TEST")
         self.abort_btn.configure(state="disabled", text="⏹ ABORT")
         self.sn_entry.configure(state="normal")
@@ -423,6 +422,9 @@ class MainScreen(ctk.CTkFrame):
 
     def _ted_suffix(self, ted_status: dict | None) -> str:
         if ted_status is None:
+            return ""
+
+        if ted_status.get("skipped"):
             return ""
 
         if ted_status.get("ok"):
@@ -442,7 +444,6 @@ class MainScreen(ctk.CTkFrame):
         result = r.get("result", "")
         ted_suffix = self._ted_suffix(ted_status)
 
-        # ── HiPot wynik ────────────────────────────────────────────────────
         if error:
             self.result_label.configure(text="ERROR", text_color=COLORS["fail"])
             self._set_status(f"❌ {error}{ted_suffix}", COLORS["fail"])
@@ -471,7 +472,6 @@ class MainScreen(ctk.CTkFrame):
         self.curr_lbl.configure(text=f"{r.get('current', '—')} mA")
         self.time_lbl.configure(text=f"{r.get('time', '—')} s")
 
-        # ── Ground Bond wynik, jeśli był ───────────────────────────────────
         if gnd is not None:
             self.gnd_frame.grid()
 
@@ -515,8 +515,11 @@ class MainScreen(ctk.CTkFrame):
             self.gnd_curr_lbl.configure(text=f"{gnd.get('current', '—')} A")
             self.gnd_time_lbl.configure(text=f"{gnd.get('time', '—')} s")
 
-        # ── Diagnostyka TED / CSV do konsoli ───────────────────────────────
-        if ted_status is not None and not ted_status.get("ok"):
+        if (
+            ted_status is not None
+            and not ted_status.get("ok")
+            and not ted_status.get("skipped")
+        ):
             print(f"❌ TED error: {ted_status.get('error', '')}")
 
         if csv_path:

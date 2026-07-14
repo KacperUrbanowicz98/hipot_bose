@@ -12,6 +12,10 @@
         "relay_port": "COM7",
         "relay_baudrate": 115200
     },
+    "integrations": {
+        "ted_enabled": false,
+        "ted_db_type": "TEST"
+    },
     "profiles": {
         "3KV": {
             "name": "3.0 kV — Soundbary / TV Speaker / SoundTouch",
