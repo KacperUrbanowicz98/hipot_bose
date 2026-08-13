@@ -1,0 +1,381 @@
+// ─────────────────────────────────────────────────────────────
+// Piny
+// ─────────────────────────────────────────────────────────────
+// D1 = GPIO5 na NodeMCU / Wemos
+#define RELAY_PIN D1
+
+// Aktualnie masz D3. Działa, ale D3/GPIO0 jest pinem bootowym.
+// Docelowo lepiej przenieść CHECK_PIN na D5/D6/D7 i zmienić tutaj.
+#define CHECK_PIN D3
+
+
+// ─────────────────────────────────────────────────────────────
+// Ustawienia czasów
+// ─────────────────────────────────────────────────────────────
+
+// Było 5000 ms. To jest za krótko przy testach.
+// Jeżeli po PE aplikacja przez kilka sekund zajmuje się HiPot/GND,
+// ESP mogło samo wracać na HIPOT.
+#define WATCHDOG_TIMEOUT_MS 30000UL
+
+// Czas na fizyczne przełączenie przekaźnika
+#define RELAY_SETTLE_MS 250UL
+
+// Ilość próbek CHECK_PIN przy potwierdzaniu pozycji
+#define CHECK_SAMPLES 9
+
+// Ile próbek musi potwierdzić stan, żeby uznać go za stabilny
+#define CHECK_REQUIRED 7
+
+// Timeout częściowo odebranej komendy bez znaku \n
+#define SERIAL_CMD_TIMEOUT_MS 1500UL
+
+
+// ─────────────────────────────────────────────────────────────
+// Stan
+// ─────────────────────────────────────────────────────────────
+enum RelayState {
+  RELAY_HIPOT,
+  RELAY_PE
+};
+
+RelayState commandedState = RELAY_HIPOT;
+
+unsigned long lastCmdTime = 0;
+unsigned long lastRxCharTime = 0;
+
+bool watchdogEnabled = false;
+
+char cmdBuffer[64];
+uint8_t cmdLen = 0;
+
+
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
+void feedSystem() {
+  // Daje czas systemowi ESP8266, WiFi stackowi i watchdogowi systemowemu.
+  yield();
+}
+
+void clearCommandBuffer() {
+  cmdLen = 0;
+  cmdBuffer[0] = '\0';
+}
+
+void relayRawHipot() {
+  digitalWrite(RELAY_PIN, LOW);
+  commandedState = RELAY_HIPOT;
+}
+
+void relayRawPe() {
+  digitalWrite(RELAY_PIN, HIGH);
+  commandedState = RELAY_PE;
+}
+
+const char* commandedStateText() {
+  if (commandedState == RELAY_PE) {
+    return "PE";
+  }
+  return "HIPOT";
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Stabilny odczyt CHECK_PIN
+// ─────────────────────────────────────────────────────────────
+int readCheckStable() {
+  int highCount = 0;
+  int lowCount = 0;
+
+  for (int i = 0; i < CHECK_SAMPLES; i++) {
+    int value = digitalRead(CHECK_PIN);
+
+    if (value == HIGH) {
+      highCount++;
+    } else {
+      lowCount++;
+    }
+
+    delay(8);
+    feedSystem();
+  }
+
+  if (highCount >= CHECK_REQUIRED) {
+    return HIGH;
+  }
+
+  if (lowCount >= CHECK_REQUIRED) {
+    return LOW;
+  }
+
+  return -1;  // niestabilny / zakłócenia
+}
+
+const char* physicalStateText() {
+  int check = readCheckStable();
+
+  if (check == LOW) {
+    return "PE";
+  }
+
+  if (check == HIGH) {
+    return "HIPOT";
+  }
+
+  return "UNKNOWN";
+}
+
+bool verifyRelay(const char* expectedState) {
+  delay(RELAY_SETTLE_MS);
+  feedSystem();
+
+  int check = readCheckStable();
+
+  if (strcmp(expectedState, "PE") == 0) {
+    return check == LOW;
+  }
+
+  if (strcmp(expectedState, "HIPOT") == 0) {
+    return check == HIGH;
+  }
+
+  return false;
+}
+
+void printStatus() {
+  Serial.print("STATE:");
+  Serial.println(physicalStateText());
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Bezpieczny powrót na HIPOT
+// ─────────────────────────────────────────────────────────────
+bool safeReturnToHipot() {
+  relayRawHipot();
+  delay(RELAY_SETTLE_MS);
+  feedSystem();
+
+  return verifyRelay("HIPOT");
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Komendy przekaźnika
+// ─────────────────────────────────────────────────────────────
+void handlePe() {
+  /*
+    Próbujemy przełączyć na PE kilka razy wewnątrz ESP.
+
+    Dzięki temu pojedynczy bounce / zakłócenie na CHECK_PIN
+    nie powoduje od razu błędu w aplikacji PC.
+  */
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    relayRawPe();
+
+    delay(RELAY_SETTLE_MS + 100);
+    feedSystem();
+
+    if (verifyRelay("PE")) {
+      Serial.println("OK:PE");
+      return;
+    }
+
+    Serial.print("WARN:PE_VERIFY_FAIL:");
+    Serial.println(attempt);
+
+    // Krótka pauza przed kolejną próbą
+    delay(250);
+    feedSystem();
+  }
+
+  // Jeżeli po 3 próbach nie ma PE, wracamy bezpiecznie do HIPOT.
+  safeReturnToHipot();
+
+  Serial.print("ERR:RELAY_FAIL:PE:");
+  Serial.print("CMD=");
+  Serial.print(commandedStateText());
+  Serial.print(":PHY=");
+  Serial.println(physicalStateText());
+}
+
+void handleHipot() {
+  /*
+    HIPOT jest pozycją bezpieczną/domyslną.
+    Tu też robimy kilka prób potwierdzenia.
+  */
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    relayRawHipot();
+
+    delay(RELAY_SETTLE_MS + 100);
+    feedSystem();
+
+    if (verifyRelay("HIPOT")) {
+      Serial.println("OK:HIPOT");
+      return;
+    }
+
+    Serial.print("WARN:HIPOT_VERIFY_FAIL:");
+    Serial.println(attempt);
+
+    delay(250);
+    feedSystem();
+  }
+
+  Serial.print("ERR:RELAY_FAIL:HIPOT:");
+  Serial.print("CMD=");
+  Serial.print(commandedStateText());
+  Serial.print(":PHY=");
+  Serial.println(physicalStateText());
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Watchdog logiczny aplikacji
+// ─────────────────────────────────────────────────────────────
+void checkLogicWatchdog() {
+  if (!watchdogEnabled) {
+    return;
+  }
+
+  if (millis() - lastCmdTime <= WATCHDOG_TIMEOUT_MS) {
+    return;
+  }
+
+  // Po braku komunikacji wracamy do bezpiecznej pozycji.
+  if (strcmp(physicalStateText(), "HIPOT") != 0) {
+    relayRawHipot();
+    delay(RELAY_SETTLE_MS);
+    feedSystem();
+
+    Serial.println("WATCHDOG:TIMEOUT->HIPOT");
+  }
+
+  watchdogEnabled = false;
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Obsługa komend
+// ─────────────────────────────────────────────────────────────
+void processCommand(const char* cmd) {
+  if (cmd == NULL || cmd[0] == '\0') {
+    return;
+  }
+
+  lastCmdTime = millis();
+
+  // Każda normalna komenda odnawia watchdog logiczny.
+  // WATCHDOG:OFF wyłączy go niżej.
+  watchdogEnabled = true;
+
+  if (strcmp(cmd, "PE") == 0) {
+    handlePe();
+  }
+  else if (strcmp(cmd, "HIPOT") == 0) {
+    handleHipot();
+  }
+  else if (strcmp(cmd, "STATUS?") == 0) {
+    printStatus();
+  }
+  else if (strcmp(cmd, "PING") == 0) {
+    Serial.println("PONG");
+  }
+  else if (strcmp(cmd, "WATCHDOG:OFF") == 0) {
+    watchdogEnabled = false;
+    Serial.println("OK:WATCHDOG_OFF");
+  }
+  else if (strcmp(cmd, "WATCHDOG:ON") == 0) {
+    watchdogEnabled = true;
+    lastCmdTime = millis();
+    Serial.println("OK:WATCHDOG_ON");
+  }
+  else if (strcmp(cmd, "RESET") == 0) {
+    Serial.println("OK:RESETTING");
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+  }
+  else {
+    Serial.print("ERR:UNKNOWN:");
+    Serial.println(cmd);
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Nieblokujący parser Serial
+// ─────────────────────────────────────────────────────────────
+void handleSerialInput() {
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    lastRxCharTime = millis();
+
+    if (c == '\r') {
+      continue;
+    }
+
+    if (c == '\n') {
+      cmdBuffer[cmdLen] = '\0';
+      processCommand(cmdBuffer);
+      clearCommandBuffer();
+      continue;
+    }
+
+    if (cmdLen < sizeof(cmdBuffer) - 1) {
+      cmdBuffer[cmdLen++] = c;
+      cmdBuffer[cmdLen] = '\0';
+    } else {
+      clearCommandBuffer();
+      Serial.println("ERR:CMD_TOO_LONG");
+    }
+  }
+
+  // Jeżeli przyszła część komendy, ale nie przyszło \n,
+  // czyścimy bufor, żeby ESP się nie "zapchało".
+  if (cmdLen > 0 && (millis() - lastRxCharTime > SERIAL_CMD_TIMEOUT_MS)) {
+    clearCommandBuffer();
+    Serial.println("ERR:CMD_TIMEOUT");
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// Setup / loop
+// ─────────────────────────────────────────────────────────────
+void setup() {
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(CHECK_PIN, INPUT_PULLUP);
+
+  // Bezpieczna pozycja na starcie
+  relayRawHipot();
+
+  Serial.begin(115200);
+  Serial.setTimeout(50);
+
+  delay(500);
+  feedSystem();
+
+  clearCommandBuffer();
+
+  Serial.println("READY");
+
+  if (verifyRelay("HIPOT")) {
+    Serial.println("STATE:HIPOT");
+  } else {
+    Serial.print("WARN:BOOT_HIPOT_NOT_CONFIRMED:");
+    printStatus();
+  }
+
+  lastCmdTime = millis();
+  watchdogEnabled = false;
+}
+
+void loop() {
+  handleSerialInput();
+  checkLogicWatchdog();
+
+  // Bardzo ważne dla ESP8266 — nie blokować systemowego watchdog.
+  feedSystem();
+}

@@ -3,6 +3,38 @@
         "12101333": {
             "name": "Kacper Urbanowicz",
             "role": "engineer"
+        },
+        "12101026": {
+            "name": "Michal Nuckowski",
+            "role": "operator"
+        },
+        "12101316": {
+            "name": "Ksawery Salwin",
+            "role": "operator"
+        },
+        "12101918": {
+            "name": "Nikodem Kusztelski",
+            "role": "operator"
+        },
+        "12101917": {
+            "name": "Sandra Hebel",
+            "role": "operator"
+        },
+        "12101400": {
+            "name": "Krzysztof Gackowski ",
+            "role": "engineer"
+        },
+        "45708": {
+            "name": "Olha Durkach",
+            "role": "operator"
+        },
+        "45708": {
+            "name": "Marko Sharko",
+            "role": "operator"
+        },
+        "12101810": {
+            "name": "Łukasz Krawczyński",
+            "role": "operator"
         }
     },
     "serial": {
@@ -13,8 +45,8 @@
         "relay_baudrate": 115200
     },
     "integrations": {
-        "ted_enabled": false,
-        "ted_db_type": "TEST"
+        "ted_enabled": true,
+        "ted_db_type": ""
     },
     "profiles": {
         "3KV": {

@@ -5,19 +5,20 @@ Builder EXE dla aplikacji HiPot Bose.
 
 Buduje aplikację PyInstallerem w trybie ONEDIR.
 
-Założenia:
-    - główny plik: main.py
-    - config.json zostaje obok EXE i może być edytowany po buildzie
-    - TED jest obecnie wyłączony przez config:
-        "integrations": {
-            "ted_enabled": false,
-            "ted_db_type": "TEST"
-        }
-    - .env NIE jest kopiowany domyślnie do release, bo TED jest wstrzymany
-    - pliki testowe/diagnostyczne nie są pakowane do aplikacji
+Zmiany:
+  - nowe moduły w PROJECT_FILES i HIDDEN_IMPORTS
+    (verdict, app_logging, runtime_state),
+  - domyślnie TRYB ŚCISŁY: builder nie akceptuje plików typu main(3).py.
+    Poprzednia wersja wybierała "najnowszy" wariant, co przy plikach
+    pobranych z przeglądarki groziło zbudowaniem EXE z przypadkowej wersji.
+    Stare zachowanie: python create_exe.py --allow-numbered
+  - build_manifest.txt zawiera listę zbudowanych plików źródłowych,
+  - --console do buildu diagnostycznego (widoczna konsola).
 
 Uruchomienie:
     python create_exe.py
+    python create_exe.py --allow-numbered
+    python create_exe.py --console
 
 Wynik:
     dist/HiPot Bose/HiPot Bose.exe
@@ -25,6 +26,7 @@ Wynik:
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import importlib.util
 import os
@@ -44,7 +46,7 @@ from typing import Iterable, Optional
 APP_NAME = "HiPot Bose"
 APP_DESCRIPTION = "HiPot Bose Production Tester"
 COMPANY_NAME = "Reconext"
-VERSION = "1.0.0.0"
+VERSION = "1.4.0.0"
 COPYRIGHT = "Reconext 2026"
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -59,17 +61,19 @@ EXE_PATH = OUTPUT_DIR / f"{APP_NAME}.exe"
 # PLIKI PROJEKTU
 # ============================================================
 # Tylko pliki wymagane przez właściwą aplikację.
-# Nie dodajemy tutaj plików diagnostycznych:
-#   ground_bond_test.py
-#   relay_test.py
-#   hipot_test_connection.py
-#   bezRTS.py
-#   niedzialajce3rzeczy.py
-#   test_ted_send.py
+# Nie pakujemy plików diagnostycznych:
+#   ground_bond_test.py, relay_test.py, hipot_test_connection.py,
+#   test_ted_send.py, set_engineer_password.py
+#
+# logger.py został USUNIĘTY z projektu — był martwym kodem zastąpionym
+# przez result_logger.py i budował nazwę pliku z niesanityzowanego SN.
 
 PROJECT_FILES = [
     "main.py",
     "config.py",
+    "verdict.py",
+    "app_logging.py",
+    "runtime_state.py",
     "login_screen.py",
     "main_screen.py",
     "hipot_controller.py",
@@ -80,18 +84,14 @@ PROJECT_FILES = [
     "ted_client.py",
 ]
 
-# Pliki edytowalne, które mają zostać obok EXE.
 EDITABLE_DATA_FILES = [
     "config.json",
 ]
 
-# Pliki opcjonalne. Domyślnie .env nie kopiujemy do release,
-# bo TED jest wstrzymany. Gdy IT potwierdzi TED, można dostarczyć .env osobno.
 OPTIONAL_DATA_FILES = [
-    # ".env",
+    # ".env",  # TED wstrzymany — dostarczyć osobno, gdy IT potwierdzi
 ]
 
-# Opcjonalne ikony — builder wybierze pierwszą znalezioną.
 OPTIONAL_ICONS = [
     "hipot_bose.ico",
     "app.ico",
@@ -119,11 +119,17 @@ HIDDEN_IMPORTS = [
     "serial.tools.list_ports",
     "serial.tools.list_ports_windows",
 
+    # Logowanie
+    "logging.handlers",
+
     # Opcjonalne .env dla TED
     "dotenv",
 
     # Moduły aplikacji
     "config",
+    "verdict",
+    "app_logging",
+    "runtime_state",
     "login_screen",
     "main_screen",
     "hipot_controller",
@@ -134,10 +140,6 @@ HIDDEN_IMPORTS = [
     "ted_client",
 ]
 
-
-# ============================================================
-# WYJĄTEK BUILDERA
-# ============================================================
 
 class BuildError(RuntimeError):
     pass
@@ -170,10 +172,6 @@ def run_command(command: list[str], cwd: Optional[Path] = None) -> None:
 
 
 def ensure_package(import_name: str, pip_name: str) -> None:
-    """
-    Sprawdza, czy pakiet jest dostępny.
-    Jeśli nie, instaluje go przez pip.
-    """
     if importlib.util.find_spec(import_name) is not None:
         return
 
@@ -182,16 +180,8 @@ def ensure_package(import_name: str, pip_name: str) -> None:
 
 
 def numeric_suffix(path: Path, canonical_name: str) -> int:
-    """
-    Pomaga wybrać najnowszy plik typu:
-        main.py
-        main(1).py
-        main(2).py
-
-    Preferuje nazwę kanoniczną bez numeru.
-    """
     if path.name.lower() == canonical_name.lower():
-        return 10**9
+        return 10 ** 9
 
     canonical = Path(canonical_name)
     pattern = re.compile(
@@ -206,19 +196,28 @@ def numeric_suffix(path: Path, canonical_name: str) -> int:
 def resolve_project_file(
     canonical_name: str,
     required: bool = True,
+    allow_numbered: bool = False,
 ) -> Optional[Path]:
     """
     Szuka pliku projektu.
 
-    Obsługuje też nazwy pobrane z ChatGPT / przeglądarki, np.:
-        main.py
-        main(1).py
-        main(5).py
+    W trybie ścisłym (domyślnym) akceptuje wyłącznie dokładną nazwę.
+    --allow-numbered przywraca stare zachowanie z main(1).py, main(5).py,
+    ale to jest wygoda developerska, nie tryb produkcyjny.
     """
     exact = ROOT_DIR / canonical_name
 
     if exact.is_file():
         return exact
+
+    if not allow_numbered:
+        if required:
+            raise BuildError(
+                f"Brak wymaganego pliku: {canonical_name}. "
+                "Jeśli masz wariant typu 'main(2).py', zmień mu nazwę albo "
+                "uruchom builder z --allow-numbered."
+            )
+        return None
 
     canonical = Path(canonical_name)
     pattern = re.compile(
@@ -227,8 +226,7 @@ def resolve_project_file(
     )
 
     candidates = [
-        path
-        for path in ROOT_DIR.iterdir()
+        path for path in ROOT_DIR.iterdir()
         if path.is_file() and pattern.match(path.name)
     ]
 
@@ -237,7 +235,8 @@ def resolve_project_file(
             candidates,
             key=lambda p: (numeric_suffix(p, canonical_name), p.stat().st_mtime),
         )
-        print(f"[~] {canonical_name}: używam {selected.name}")
+        print(f"[!] {canonical_name}: używam {selected.name} "
+              f"(tryb --allow-numbered)")
         return selected
 
     if required:
@@ -246,9 +245,10 @@ def resolve_project_file(
     return None
 
 
-def resolve_icon() -> Optional[Path]:
+def resolve_icon(allow_numbered: bool) -> Optional[Path]:
     for icon_name in OPTIONAL_ICONS:
-        icon = resolve_project_file(icon_name, required=False)
+        icon = resolve_project_file(icon_name, required=False,
+                                    allow_numbered=allow_numbered)
         if icon:
             return icon
     return None
@@ -301,11 +301,6 @@ def create_version_file(path: Path) -> None:
 # ============================================================
 
 def create_runtime_hook(path: Path) -> None:
-    """
-    Runtime hook:
-        - ustawia katalog pracy na folder EXE
-        - ustawia ścieżki Tcl/Tk po spakowaniu
-    """
     content = """import os
 import sys
 
@@ -333,10 +328,6 @@ if getattr(sys, "frozen", False):
 # ============================================================
 
 def locate_tcl_tk() -> tuple[Path, Path]:
-    """
-    Znajduje katalogi Tcl/Tk używane przez obecnego Pythona.
-    Potrzebne dla tkinter/customtkinter.
-    """
     try:
         import tkinter as tk
 
@@ -362,8 +353,7 @@ def locate_tcl_tk() -> tuple[Path, Path]:
 
     if missing:
         raise BuildError(
-            "Instalacja Tcl/Tk jest niekompletna. Brakuje: "
-            + ", ".join(missing)
+            "Instalacja Tcl/Tk jest niekompletna. Brakuje: " + ", ".join(missing)
         )
 
     print(f"[+] Tcl: {tcl_dir}")
@@ -373,9 +363,6 @@ def locate_tcl_tk() -> tuple[Path, Path]:
 
 
 def copy_tcl_tk_runtime(tcl_dir: Path, tk_dir: Path) -> None:
-    """
-    Po buildzie kopiuje pełne Tcl/Tk do _internal.
-    """
     print_header("Weryfikacja bibliotek Tcl/Tk")
 
     internal_dir = OUTPUT_DIR / "_internal"
@@ -397,8 +384,7 @@ def copy_tcl_tk_runtime(tcl_dir: Path, tk_dir: Path) -> None:
 
     if missing:
         raise BuildError(
-            "Po buildzie nadal brakuje plików Tcl/Tk: "
-            + ", ".join(missing)
+            "Po buildzie nadal brakuje plików Tcl/Tk: " + ", ".join(missing)
         )
 
     print(f"[+] Tcl skopiowany do: {tcl_target}")
@@ -409,7 +395,7 @@ def copy_tcl_tk_runtime(tcl_dir: Path, tk_dir: Path) -> None:
 # STAGING
 # ============================================================
 
-def prepare_staging() -> dict[str, Path]:
+def prepare_staging(allow_numbered: bool) -> dict[str, Path]:
     print_header("Przygotowanie plików")
 
     if STAGING_DIR.exists():
@@ -420,7 +406,7 @@ def prepare_staging() -> dict[str, Path]:
     resolved: dict[str, Path] = {}
 
     for canonical_name in PROJECT_FILES:
-        source = resolve_project_file(canonical_name)
+        source = resolve_project_file(canonical_name, allow_numbered=allow_numbered)
         assert source is not None
 
         destination = STAGING_DIR / canonical_name
@@ -430,14 +416,21 @@ def prepare_staging() -> dict[str, Path]:
         print(f"[+] {source.name} -> {canonical_name}")
 
     for canonical_name in EDITABLE_DATA_FILES:
-        source = resolve_project_file(canonical_name)
-        assert source is not None
+        source = resolve_project_file(
+            canonical_name, required=False, allow_numbered=allow_numbered
+        )
 
-        resolved[canonical_name] = source
-        print(f"[+] Dane edytowalne: {source.name}")
+        if source:
+            resolved[canonical_name] = source
+            print(f"[+] Dane edytowalne: {source.name}")
+        else:
+            print(f"[~] Brak {canonical_name} — aplikacja utworzy domyślny "
+                  "przy pierwszym uruchomieniu")
 
     for canonical_name in OPTIONAL_DATA_FILES:
-        source = resolve_project_file(canonical_name, required=False)
+        source = resolve_project_file(
+            canonical_name, required=False, allow_numbered=allow_numbered
+        )
 
         if source:
             resolved[canonical_name] = source
@@ -455,15 +448,13 @@ def prepare_staging() -> dict[str, Path]:
 # BUILD
 # ============================================================
 
-def build_application(tcl_dir: Path, tk_dir: Path) -> None:
+def build_application(tcl_dir: Path, tk_dir: Path, allow_numbered: bool,
+                      console: bool) -> None:
     print_header("Budowanie HiPot Bose")
 
     ensure_package("PyInstaller", "pyinstaller")
     ensure_package("customtkinter", "customtkinter")
     ensure_package("serial", "pyserial")
-
-    # TED jest wyłączony, ale ted_client.py opcjonalnie importuje dotenv.
-    # Instalujemy, żeby później nie było problemu, gdy TED zostanie włączony.
     ensure_package("dotenv", "python-dotenv")
 
     if OUTPUT_DIR.exists():
@@ -481,42 +472,26 @@ def build_application(tcl_dir: Path, tk_dir: Path) -> None:
         "PyInstaller",
 
         "--onedir",
-        "--windowed",
+        "--console" if console else "--windowed",
         "--clean",
         "--noconfirm",
         "--noupx",
 
-        "--name",
-        APP_NAME,
+        "--name", APP_NAME,
+        "--distpath", str(DIST_DIR),
+        "--workpath", str(work_dir),
+        "--specpath", str(spec_dir),
 
-        "--distpath",
-        str(DIST_DIR),
+        "--version-file", str(STAGING_DIR / "version_info.txt"),
+        "--runtime-hook", str(STAGING_DIR / "runtime_hook_hipot_bose.py"),
 
-        "--workpath",
-        str(work_dir),
+        "--add-data", f"{tcl_dir};_tcl_data",
+        "--add-data", f"{tk_dir};_tk_data",
 
-        "--specpath",
-        str(spec_dir),
-
-        "--version-file",
-        str(STAGING_DIR / "version_info.txt"),
-
-        "--runtime-hook",
-        str(STAGING_DIR / "runtime_hook_hipot_bose.py"),
-
-        # Tcl/Tk
-        "--add-data",
-        f"{tcl_dir};_tcl_data",
-
-        "--add-data",
-        f"{tk_dir};_tk_data",
-
-        # CustomTkinter ma własne assety/theme.
-        "--collect-data",
-        "customtkinter",
+        "--collect-data", "customtkinter",
     ]
 
-    icon = resolve_icon()
+    icon = resolve_icon(allow_numbered)
 
     if icon:
         command.extend(["--icon", str(icon)])
@@ -557,6 +532,7 @@ def copy_editable_files(resolved: dict[str, Path]) -> None:
 
     logs_dir = OUTPUT_DIR / "logs"
     logs_dir.mkdir(exist_ok=True)
+    (logs_dir / "ted_queue").mkdir(exist_ok=True)
 
     print(f"[+] Folder logów: {logs_dir}")
 
@@ -581,7 +557,7 @@ def iter_output_files() -> Iterable[Path]:
             yield path
 
 
-def write_manifest() -> None:
+def write_manifest(resolved: dict[str, Path]) -> None:
     manifest = OUTPUT_DIR / "build_manifest.txt"
 
     lines = [
@@ -591,8 +567,17 @@ def write_manifest() -> None:
         f"Build time: {datetime.now().astimezone().isoformat(timespec='seconds')}",
         "Authenticode signed: NO",
         "",
-        "SHA-256:",
+        "Pliki źródłowe użyte do buildu:",
     ]
+
+    for canonical, source in sorted(resolved.items()):
+        try:
+            checksum = sha256_file(source)
+        except OSError:
+            checksum = "?" * 64
+        lines.append(f"  {canonical:<24} <- {source.name}  [{checksum[:16]}...]")
+
+    lines += ["", "SHA-256 plików wynikowych:"]
 
     for path in iter_output_files():
         lines.append(f"{sha256_file(path)}  {path.relative_to(OUTPUT_DIR)}")
@@ -604,7 +589,7 @@ def write_manifest() -> None:
 # PODSUMOWANIE
 # ============================================================
 
-def show_summary() -> None:
+def show_summary(console: bool) -> None:
     exe_size = EXE_PATH.stat().st_size / (1024 * 1024)
 
     folder_size = sum(
@@ -619,12 +604,15 @@ def show_summary() -> None:
     print(f"Uruchamiaj       : {EXE_PATH}")
     print(f"Rozmiar EXE      : {exe_size:.1f} MB")
     print(f"Rozmiar folderu  : {folder_size:.1f} MB")
+    print(f"Tryb konsoli     : {'TAK (diagnostyczny)' if console else 'NIE'}")
     print("Podpis cyfrowy   : NIE")
 
     print()
     print("[!] Kopiuj cały folder 'HiPot Bose', nie samo EXE.")
     print("[!] config.json musi pozostać obok EXE.")
-    print("[!] logs/ będzie zawierał lokalne pliki CSV.")
+    print("[!] logs/ zawiera app.log, config_audit.log i wyniki CSV.")
+    print("[!] Po wdrożeniu: zmień hasło inżynieryjne "
+          "(Panel → Bezpieczeństwo).")
     print("[!] .env nie jest kopiowany, bo TED jest aktualnie wstrzymany.")
 
 
@@ -633,23 +621,34 @@ def show_summary() -> None:
 # ============================================================
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Builder EXE — HiPot Bose")
+    parser.add_argument(
+        "--allow-numbered", action="store_true",
+        help="Akceptuj pliki typu main(2).py (tylko development)",
+    )
+    parser.add_argument(
+        "--console", action="store_true",
+        help="Build z widoczną konsolą (diagnostyka)",
+    )
+    args = parser.parse_args()
+
     try:
         if os.name != "nt":
             raise BuildError("Builder należy uruchomić na Windows.")
 
-        resolved = prepare_staging()
+        resolved = prepare_staging(args.allow_numbered)
 
         tcl_dir, tk_dir = locate_tcl_tk()
 
-        build_application(tcl_dir, tk_dir)
+        build_application(tcl_dir, tk_dir, args.allow_numbered, args.console)
 
         copy_tcl_tk_runtime(tcl_dir, tk_dir)
 
         copy_editable_files(resolved)
 
-        write_manifest()
+        write_manifest(resolved)
 
-        show_summary()
+        show_summary(args.console)
 
         return 0
 
