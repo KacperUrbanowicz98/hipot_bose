@@ -1,0 +1,17 @@
+PODGLĄD XML — TED PRODUKCJA (ted_db_type = "")
+Wygenerowane z HiPot Bose 1.1.7, do potwierdzenia przez IT.
+Klucz funkcji idzie w nagłówku x-functions-key, nie w URL.
+
+======================================================================
+PRZYPADEK: PASS — HiPot + Ground Bond
+======================================================================
+
+<?xml version='1.0' encoding='utf-8'?>
+<ns0:DataWipeResultV2 xmlns:ns0="http://winit/webservices/"><ns0:xDoc><record><SerialNumber>079115Z81840226AE</SerialNumber><PartNumber /><StartTime>2026-08-18T09:30:00</StartTime><EndTime>2026-08-18T09:30:06</EndTime><MachineName>HIPOT</MachineName><Result>PASS</Result><TestArea>BYDGOSZCZ</TestArea><CellNumber /><Program>BOSE_BYD</Program><MiscInfo /><MACAddress /><Msg>Profile=1_5KV_GND; Overall=PASS; HiPot=Pass; GND=Pass; PC=vm</Msg><LogFile /><Username>12101333 Kacper Urbanowicz</Username><OrderNumber /><UploadTime /><Contract>10058</Contract><FileReference /><FailureReference /><FailureNumber>0000</FailureNumber><ErrItem /><BatteryHealthGrade /><TestAreaOrig /><subtest><TestIDNumber>1</TestIDNumber><TestName>HiPot ACW</TestName><TestDesc>1_5KV_GND</TestDesc><StartTime>2026-08-18T09:30:00</StartTime><EndTime>2026-08-18T09:30:06</EndTime><Result>PASS</Result><ErrorMessage /><ResultMessage>Voltage=1.50kV; Current=1.19mA; Time=2.0s; Verdict=PASS</ResultMessage></subtest><subtest><TestIDNumber>2</TestIDNumber><TestName>Ground Bond</TestName><TestDesc>1_5KV_GND</TestDesc><StartTime>2026-08-18T09:30:00</StartTime><EndTime>2026-08-18T09:30:06</EndTime><Result>PASS</Result><ErrorMessage /><ResultMessage>Resistance=73mOhm; Current=24.90A; Time=1.0s; Verdict=PASS</ResultMessage></subtest></record></ns0:xDoc><ns0:dbType /><ns0:servicename /><ns0:accesstoken /></ns0:DataWipeResultV2>
+
+======================================================================
+PRZYPADEK: FAIL — Ground Bond HI-Limit
+======================================================================
+
+<?xml version='1.0' encoding='utf-8'?>
+<ns0:DataWipeResultV2 xmlns:ns0="http://winit/webservices/"><ns0:xDoc><record><SerialNumber>079115Z81840226AE</SerialNumber><PartNumber /><StartTime>2026-08-18T09:30:00</StartTime><EndTime>2026-08-18T09:30:06</EndTime><MachineName>HIPOT</MachineName><Result>FAIL</Result><TestArea>BYDGOSZCZ</TestArea><CellNumber /><Program>BOSE_BYD</Program><MiscInfo /><MACAddress /><Msg>Profile=1_5KV_GND; Overall=FAIL; HiPot=Pass; GND=HI-Limit; PC=vm</Msg><LogFile /><Username>12101333 Kacper Urbanowicz</Username><OrderNumber /><UploadTime /><Contract>10058</Contract><FileReference /><FailureReference /><FailureNumber>GND_FAIL</FailureNumber><ErrItem>HI-Limit - rezystancja 106.0 mOhm &gt; HI limit 100 mOhm</ErrItem><BatteryHealthGrade /><TestAreaOrig /><subtest><TestIDNumber>1</TestIDNumber><TestName>HiPot ACW</TestName><TestDesc>1_5KV_GND</TestDesc><StartTime>2026-08-18T09:30:00</StartTime><EndTime>2026-08-18T09:30:06</EndTime><Result>PASS</Result><ErrorMessage /><ResultMessage>Voltage=1.50kV; Current=1.18mA; Time=2.0s; Verdict=PASS</ResultMessage></subtest><subtest><TestIDNumber>2</TestIDNumber><TestName>Ground Bond</TestName><TestDesc>1_5KV_GND</TestDesc><StartTime>2026-08-18T09:30:00</StartTime><EndTime>2026-08-18T09:30:06</EndTime><Result>FAIL</Result><ErrorMessage>HI-Limit - rezystancja 106.0 mOhm &gt; HI limit 100 mOhm</ErrorMessage><ResultMessage>Resistance=106mOhm; Current=24.90A; Time=0.4s; Verdict=FAIL</ResultMessage></subtest></record></ns0:xDoc><ns0:dbType /><ns0:servicename /><ns0:accesstoken /></ns0:DataWipeResultV2>

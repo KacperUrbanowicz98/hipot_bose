@@ -56,14 +56,37 @@ log = get_logger(__name__)
 # ─────────────────────────────────────────────────────────────
 # Próba załadowania .env
 # ─────────────────────────────────────────────────────────────
-try:
-    from dotenv import load_dotenv
+def _load_env_file() -> None:
+    """
+    Ładuje .env LEŻĄCY OBOK EXE.
 
-    load_dotenv()
-except ImportError:
-    # Bez python-dotenv kod nadal działa — TED_FUNCTION_KEY musi być wtedy
-    # zmienną środowiskową Windows.
-    pass
+    Samo load_dotenv() szuka pliku względem katalogu roboczego albo ramki
+    wywołania — w buildzie PyInstallera potrafi go nie znaleźć. Podajemy
+    ścieżkę jawnie, a domyślne szukanie zostawiamy jako uzupełnienie.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        # Bez python-dotenv kod nadal działa — TED_FUNCTION_KEY musi być
+        # wtedy zmienną środowiskową Windows.
+        log.info("python-dotenv niedostępne — czytam tylko zmienne środowiskowe.")
+        return
+
+    from app_logging import app_dir
+
+    env_path = app_dir() / ".env"
+
+    if env_path.is_file():
+        load_dotenv(env_path, override=False)
+        log.info("Wczytano .env: %s", env_path)
+    else:
+        log.warning(".env nie znaleziony obok aplikacji (%s) — "
+                    "TED_FUNCTION_KEY musi być zmienną środowiskową.", env_path)
+
+    load_dotenv(override=False)
+
+
+_load_env_file()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -316,6 +339,11 @@ def build_hipot_payload(
         )
     elif gnd_executed and gnd_v != V.PASS:
         failure_number = f"GND_{gnd_v}"
+    elif expects_gnd and not gnd_executed:
+        # HiPot zdał, ale krok Ground Bond wymagany przez profil nie zostawił
+        # żadnego wyniku. To niekompletny test, nie sztuka NOK — TED ma to
+        # rozróżnić po FailureNumber.
+        failure_number = "GND_MISSING"
     else:
         failure_number = "9999"
 

@@ -12,6 +12,8 @@ Zmiany:
     Poprzednia wersja wybierała "najnowszy" wariant, co przy plikach
     pobranych z przeglądarki groziło zbudowaniem EXE z przypadkowej wersji.
     Stare zachowanie: python create_exe.py --allow-numbered
+  - .env kopiowany do release (TED aktywny), z kontrolą spójności
+    względem integrations.ted_enabled w config.json,
   - build_manifest.txt zawiera listę zbudowanych plików źródłowych,
   - --console do buildu diagnostycznego (widoczna konsola).
 
@@ -46,7 +48,7 @@ from typing import Iterable, Optional
 APP_NAME = "HiPot Bose"
 APP_DESCRIPTION = "HiPot Bose Production Tester"
 COMPANY_NAME = "Reconext"
-VERSION = "1.4.0.0"
+VERSION = "1.1.7.0"
 COPYRIGHT = "Reconext 2026"
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -88,8 +90,11 @@ EDITABLE_DATA_FILES = [
     "config.json",
 ]
 
+# .env z TED_FUNCTION_KEY jest kopiowany obok EXE, bo TED jest AKTYWNY.
+# Bez tego pliku aplikacja nie ma klucza funkcji i każdy wynik ląduje
+# w kolejce logs/ted_queue zamiast trafić do TED.
 OPTIONAL_DATA_FILES = [
-    # ".env",  # TED wstrzymany — dostarczyć osobno, gdy IT potwierdzi
+    ".env",
 ]
 
 OPTIONAL_ICONS = [
@@ -395,6 +400,68 @@ def copy_tcl_tk_runtime(tcl_dir: Path, tk_dir: Path) -> None:
 # STAGING
 # ============================================================
 
+def check_ted_prerequisites() -> None:
+    """
+    Kontrola przed buildem: jeżeli TED jest włączony w config.json, to .env
+    z kluczem funkcji MUSI być obecny.
+
+    Bez tego aplikacja wstaje, testuje, ale każdy wynik ląduje w kolejce
+    logs/ted_queue zamiast w TED — i nikt tego nie zauważy do czasu, aż
+    ktoś zapyta o brakujące rekordy.
+    """
+    print_header("Kontrola integracji TED")
+
+    config_path = ROOT_DIR / "config.json"
+    env_path = ROOT_DIR / ".env"
+
+    ted_enabled = None
+    db_type = None
+
+    if config_path.is_file():
+        try:
+            import json
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            integrations = config.get("integrations", {})
+            ted_enabled = integrations.get("ted_enabled")
+            db_type = integrations.get("ted_db_type")
+        except Exception as error:
+            print(f"[~] Nie mogę odczytać config.json: {error}")
+    else:
+        print("[~] Brak config.json — pominę kontrolę spójności TED.")
+
+    print(f"[+] ted_enabled : {ted_enabled}")
+    print(f"[+] ted_db_type : {db_type!r}"
+          f"{'  (tabele TESTOWE)' if db_type == 'TEST' else ''}"
+          f"{'  (PRODUKCJA)' if db_type == '' else ''}")
+    print(f"[+] .env        : {'obecny' if env_path.is_file() else 'BRAK'}")
+
+    if ted_enabled and not env_path.is_file():
+        raise BuildError(
+            "TED jest włączony (integrations.ted_enabled = true), ale brakuje "
+            "pliku .env z TED_FUNCTION_KEY.\n"
+            "    Bez niego wyniki będą trafiać wyłącznie do kolejki "
+            "logs/ted_queue, a nie do TED.\n"
+            "    Dodaj .env obok create_exe.py albo wyłącz TED w config.json."
+        )
+
+    if env_path.is_file():
+        content = env_path.read_text(encoding="utf-8", errors="replace")
+        if "TED_FUNCTION_KEY" not in content:
+            raise BuildError(
+                ".env istnieje, ale nie zawiera TED_FUNCTION_KEY. "
+                "Sprawdź nazwę zmiennej."
+            )
+        # Nie wypisujemy wartości klucza.
+        print("[+] .env zawiera TED_FUNCTION_KEY")
+
+    if db_type == "":
+        print("[!] Cel zapisu: TABELE PRODUKCYJNE TED.")
+        print("[!] Rekordy z tego buildu będą danymi produkcyjnymi.")
+    elif db_type == "TEST":
+        print("[!] Cel zapisu: tabele TESTOWE TED.")
+        print("[!] Jeśli to build produkcyjny, ustaw ted_db_type = \"\".")
+
+
 def prepare_staging(allow_numbered: bool) -> dict[str, Path]:
     print_header("Przygotowanie plików")
 
@@ -613,7 +680,15 @@ def show_summary(console: bool) -> None:
     print("[!] logs/ zawiera app.log, config_audit.log i wyniki CSV.")
     print("[!] Po wdrożeniu: zmień hasło inżynieryjne "
           "(Panel → Bezpieczeństwo).")
-    print("[!] .env nie jest kopiowany, bo TED jest aktualnie wstrzymany.")
+
+    env_copied = (OUTPUT_DIR / ".env").is_file()
+
+    if env_copied:
+        print("[!] .env z kluczem TED leży obok EXE — NIE udostępniaj tego")
+        print("    folderu osobom spoza stanowiska i nie wrzucaj go do repo.")
+    else:
+        print("[!] .env NIE został skopiowany — TED nie będzie działać,")
+        print("    wyniki trafią do kolejki logs/ted_queue.")
 
 
 # ============================================================
@@ -635,6 +710,8 @@ def main() -> int:
     try:
         if os.name != "nt":
             raise BuildError("Builder należy uruchomić na Windows.")
+
+        check_ted_prerequisites()
 
         resolved = prepare_staging(args.allow_numbered)
 

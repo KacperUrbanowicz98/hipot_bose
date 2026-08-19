@@ -85,8 +85,13 @@ DEFAULT_CONFIG: dict = {
     },
 
     "integrations": {
-        "ted_enabled": False,
-        "ted_db_type": "TEST",
+        # TED jest aktywny. Wymaga pliku .env z TED_FUNCTION_KEY obok EXE.
+        "ted_enabled": True,
+
+        # "" -> TABELE PRODUKCYJNE TED, "TEST" -> tabele testowe.
+        # Ustawione na produkcję na polecenie właściciela stanowiska
+        # (2026-08-18). Powrót na testowe: wpisz "TEST".
+        "ted_db_type": "",
         # Gdy True, brak potwierdzenia z TED blokuje zwolnienie sztuki.
         # Domyślnie False — decyzja procesowa, nie techniczna.
         "ted_required": False,
@@ -96,10 +101,23 @@ DEFAULT_CONFIG: dict = {
         # Margines czasu DOPISYWANY do ramp+dwell. To NIE jest górny limit.
         # Wcześniej kod robił min(ramp+dwell+1.5, test_timeout), czyli przy
         # długim profilu SKRACAŁ czekanie i czytał wynik przy podanym napięciu.
-        "result_margin_s": 30.0,
+        # Polling zwraca wynik natychmiast, gdy tester go odda — margines
+        # dotyczy WYŁĄCZNIE sytuacji, w której wynik nie nadchodzi.
+        "result_margin_s": 10.0,
+
+        # Osobny, krótszy margines dla Ground Bond. Dwell GND to zwykle ~1 s,
+        # więc wynik powinien być dostępny niemal od razu.
+        "gnd_result_margin_s": 6.0,
 
         # Co ile odpytywać RD n? o wynik po minimalnym czasie testu.
-        "result_poll_interval_s": 0.5,
+        "result_poll_interval_s": 0.3,
+
+        # Ile czekać na odpowiedź w jednym odpytaniu RD n?.
+        "result_poll_query_wait_s": 0.5,
+
+        # Po ilu pełnych przebiegach bez rekordu ze znacznikiem typu przyjąć
+        # rekord bez znacznika (np. "1,2,Pass,25.1,65,1.0").
+        "sweeps_before_fallback": 3,
 
         # Odczekanie po potwierdzeniu wyniku, zanim ruszy przekaźnik.
         "relay_switch_delay_s": 1.0,
@@ -109,24 +127,57 @@ DEFAULT_CONFIG: dict = {
         #   False -> stare zachowanie, GND leci bez przełączenia na PE
         "require_relay_for_gnd": True,
 
-        # Kolejność pól rezystancja/prąd w odpowiedzi RD n? dla Ground Bond.
+        # Kolejność pól w odpowiedzi RD n? dla Ground Bond.
+        #   "current_first"    -> ...,<status>,<current>,<resistance>,<time>
+        #   "resistance_first" -> ...,<status>,<resistance>,<current>,<time>
         #   "auto"             -> rozpoznanie po zaprogramowanym prądzie GND
-        #   "current_first"    -> ...,<verdict>,<current>,<resistance>,...
-        #   "resistance_first" -> ...,<verdict>,<resistance>,<current>,...
-        # Dokumentacja i kod w repo opisywały to sprzecznie, dlatego "auto".
-        "gnd_field_order": "auto",
+        #
+        # POTWIERDZONE current_first, dwa niezależne źródła:
+        #   1. manual str. 19 — wyświetlacz GND: "30.0A GND 150mΩ"
+        #      (RD zwraca {step, typ, status, meter1, meter2, meter3})
+        #   2. log ze stanowiska 2026-08-17: gnd_current=24,90 przy zadanych
+        #      25,0 A, gnd_resistance=73,00 — czyli prąd jest pierwszy.
+        # Komentarz w ground_bond_test.py był błędny.
+        "gnd_field_order": "current_first",
 
         # Tolerancja rozpoznania prądu GND przy gnd_field_order="auto".
         "gnd_current_tolerance": 0.35,
 
-        # ── Odpytywanie statusu testera (SA?) ──────────────────────────────
-        # DO UZUPEŁNIENIA NA STANOWISKU. Dopóki listy są puste, kod opiera się
-        # wyłącznie na pollingu RD n? — działa, ale bez dodatkowego
-        # potwierdzenia z rejestru statusu.
-        # Podejrzyj realne odpowiedzi: Panel Inżynieryjny -> Diagnostyka -> SA?
-        "status_query": "SA?",
-        "status_busy_tokens": [],   # np. ["TESTING", "RUN", "RAMP", "DWELL"]
-        "status_idle_tokens": [],   # np. ["READY", "STOP", "IDLE"]
+        # ── Wykrywanie stanu testera ───────────────────────────────────────
+        # 'SA?' NIE ISTNIEJE w serii 4000 — zwracał pustkę na stanowisku
+        # (potwierdzone testem 18.08). Udokumentowane komendy: TD?, RD n?,
+        # RR?, RI?, LS? oraz *IDN?, *STB?, *OPC?, *ESR? po RS-232.
+        #
+        # Stan testu jest teraz czytany LICZBOWO i nie wymaga konfiguracji:
+        #   *STB? bit 0x08 (PROCESS) -> test w toku
+        #   *OPC?  0 = w toku, 1 = zakończony
+        # Poniższe tokeny to już tylko trzecia linia odwrotu, dla firmware,
+        # które nie obsługuje *STB?/*OPC?.
+        "status_query": "TD?",
+        "status_busy_tokens": [],
+        "status_idle_tokens": [],
+
+        # RI? przed każdą komendą TEST. Zamienia bezużyteczne
+        # "TEST — brak ACK" na "INTERLOCK OTWARTY".
+        "check_interlock": True,
+
+        # Co ile obiegów pollingu odpytywać *STB?/*OPC?. 1 = w każdym
+        # (wolniej), 3 = co trzeci. Polling RD n? jest sygnałem głównym.
+        "status_check_every": 3,
+
+        # Niezależna kontrola wyniku przez *STB? (bity ALL_PASS / FAIL).
+        # Domyślnie WYŁĄCZONE: bity mogą być zatrzaśnięte z poprzedniego
+        # testu, a fałszywy FAIL byłby gorszy od braku kontroli. Aplikacja
+        # zawsze LOGUJE porównanie — po potwierdzeniu na stanowisku, że bity
+        # odświeżają się per test, włącz tę flagę.
+        "verify_with_status_byte": False
+    },
+
+    "ui": {
+        # Nadpisania podpisu pod dużą etykietą wyniku. Pozwala dopasować
+        # słownictwo do instrukcji stanowiskowej bez przebudowy EXE.
+        # Klucze: PASS, FAIL, ERROR, UNKNOWN, ABORTED
+        "verdict_hints": {}
     },
 
     "security": {
@@ -462,18 +513,51 @@ def resolve_profile_for_sn(sn: str) -> tuple:
 # ── Walidacja profilu ──────────────────────────────────────────────────────
 #: Granice akceptowane przez aplikację. Nie zastępują ograniczeń testera —
 #: mają wyłapać oczywiste pomyłki wpisania (przecinek, zera, znak minus).
+#: Zakresy wg Slaughter 4000 Series Manual (specyfikacja modelu 4320).
+#: Wartości poza zakresem tester odrzuci NAK-iem, więc blokujemy je w UI.
 LIMITS = {
-    "voltage":      (0.1, 5.0),      # kV
-    "hi_limit":     (0.01, 100.0),   # mA
-    "lo_limit":     (0.0, 100.0),    # mA
-    "ramp":         (0.1, 999.0),    # s
-    "dwell":        (0.2, 999.0),    # s
-    "gnd_current":  (1.0, 40.0),     # A
-    "gnd_hi_limit": (1.0, 1000.0),   # mΩ
-    "gnd_lo_limit": (0.0, 1000.0),   # mΩ
-    "gnd_dwell":    (0.2, 999.0),    # s
-    "gnd_offset":   (0.0, 1000.0),   # mΩ
+    "voltage":      (0.0, 5.00),     # kV AC — manual: 0.00-5.00 kV AC
+    "hi_limit":     (0.01, 20.00),   # mA AC — manual: 0.00-20.00 mA AC
+    "lo_limit":     (0.0, 20.00),    # mA AC
+    "ramp":         (0.1, 999.9),    # s     — manual: 0, 0.5-999.9 s
+    "dwell":        (0.5, 999.9),    # s
+    "gnd_current":  (3.0, 30.0),     # A AC  — manual: EC 3.00-30.00 A
+    "gnd_hi_limit": (1.0, 510.0),    # mΩ    — zależny od prądu, patrz niżej
+    "gnd_lo_limit": (0.0, 510.0),    # mΩ
+    "gnd_dwell":    (0.5, 999.9),    # s
+    "gnd_offset":   (0.0, 100.0),    # mΩ    — manual: Offset 0-100 mΩ
 }
+
+#: Maksymalny limit rezystancji GND zależy od nastawionego prądu (manual s. 19):
+#:      3.0 – 10.0 A  ->  0 – 510 mΩ
+#:     10.1 – 25.0 A  ->  0 – 200 mΩ
+#:     25.1 – 30.0 A  ->  0 – 150 mΩ
+GND_LIMIT_BY_CURRENT = ((10.0, 510.0), (25.0, 200.0), (30.0, 150.0))
+
+
+def gnd_max_limit(current: float) -> float:
+    """Maksymalny HI/LO limit rezystancji GND dla danego prądu."""
+    for max_current, max_resistance in GND_LIMIT_BY_CURRENT:
+        if current <= max_current:
+            return max_resistance
+    return 150.0
+
+
+def check_gnd_limit_vs_current(current: float, hi_limit: float,
+                               lo_limit: float) -> str | None:
+    """
+    Walidacja krzyżowa: limit rezystancji musi mieścić się w zakresie
+    dopuszczalnym dla nastawionego prądu. Tester odrzuci wartość poza
+    zakresem, a operator zobaczyłby tylko 'brak ACK na EH'.
+    """
+    allowed = gnd_max_limit(current)
+
+    for name, value in (("HI limit GND", hi_limit), ("LO limit GND", lo_limit)):
+        if value > allowed:
+            return (f"{name} {value:g} mΩ przekracza zakres testera "
+                    f"({allowed:g} mΩ przy prądzie {current:g} A)")
+
+    return None
 
 
 def check_range(field: str, value: float) -> str | None:

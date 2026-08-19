@@ -37,6 +37,7 @@ import runtime_state
 from app_logging import audit, get_logger, read_audit_tail
 from config import (
     COLORS,
+    check_gnd_limit_vs_current,
     check_range,
     load_config,
     save_config,
@@ -594,6 +595,22 @@ class EngineerPanel(ctk.CTkToplevel):
                 if g_hi <= g_lo:
                     gnd_errors.append("HI limit GND musi być większy niż LO")
 
+                # Limit rezystancji zależy od prądu (manual s. 19). Bez tego
+                # tester odrzuciłby EH NAK-iem, a operator zobaczyłby tylko
+                # "brak ACK na EH".
+                cross = check_gnd_limit_vs_current(gc, g_hi, g_lo)
+                if cross:
+                    gnd_errors.append(cross)
+
+                # Offset 0 przy realnych odczytach blisko limitu to najczęstsza
+                # przyczyna fałszywych FAIL — rezystancja kabla i oprzyrządowania
+                # wchodzi wtedy do pomiaru.
+                if g_off == 0:
+                    log.warning(
+                        "Profil GND z offsetem 0 — rezystancja kabla i "
+                        "oprzyrządowania wejdzie do pomiaru."
+                    )
+
                 if gnd_errors:
                     self._show_profile_status(
                         "⚠ " + " | ".join(gnd_errors), COLORS["fail"]
@@ -1111,9 +1128,11 @@ class EngineerPanel(ctk.CTkToplevel):
         self._hipot_entries = {}
 
         hipot_fields = [
-            ("Margines odczytu wyniku (s):", "result_margin_s", "30.0",
+            ("Margines wyniku HiPot (s):", "result_margin_s", "10.0",
              "Doliczany do ramp+dwell. Limit awaryjny, nie skrócenie."),
-            ("Odstęp odpytywania RD (s):", "result_poll_interval_s", "0.5", ""),
+            ("Margines wyniku GND (s):", "gnd_result_margin_s", "6.0",
+             "Osobny, krótszy — dwell GND to zwykle ~1 s."),
+            ("Odstęp odpytywania RD (s):", "result_poll_interval_s", "0.3", ""),
             ("Opóźnienie przed relay (s):", "relay_switch_delay_s", "1.0",
              "Odczekanie po odczycie wyniku, zanim ruszą styki."),
         ]
@@ -1254,13 +1273,15 @@ class EngineerPanel(ctk.CTkToplevel):
 
                 hipot_values[key] = value
 
-            if hipot_values.get("result_margin_s", 30.0) < 5.0:
-                self._show_port_status(
-                    "⚠ Margines odczytu wyniku poniżej 5 s jest ryzykowny — "
-                    "tester może nie zdążyć zapisać wyniku.",
-                    COLORS["fail"],
-                )
-                return
+            for key, minimum in (("result_margin_s", 5.0),
+                                 ("gnd_result_margin_s", 2.0)):
+                if hipot_values.get(key, minimum) < minimum:
+                    self._show_port_status(
+                        f"⚠ {key} poniżej {minimum:g} s jest ryzykowne — "
+                        "tester może nie zdążyć zapisać wyniku.",
+                        COLORS["fail"],
+                    )
+                    return
 
             config = load_config()
 
@@ -1686,6 +1707,18 @@ class EngineerPanel(ctk.CTkToplevel):
         threading.Thread(target=self._do_connection_test, daemon=True).start()
 
     def _do_connection_test(self):
+        """
+        Sekwencja diagnostyczna oparta WYŁĄCZNIE na komendach z manuala.
+
+        Poprzednia wersja wysyłała RESET i traktowała brak odpowiedzi jako
+        błąd — a RESET z definicji NIE odpowiada, więc komunikat był mylący.
+        Do sprawdzenia łącza służy *IDN?.
+        """
+        from hipot_controller import (
+            CMD_INTERLOCK, CMD_OPC, CMD_REMOTE_RESET, CMD_STATUS_BYTE,
+            CMD_TEST_DATA, describe_status_byte,
+        )
+
         serial_cfg = load_config().get("serial", {})
         port = serial_cfg.get("port", "COM11")
         baud = serial_cfg.get("baudrate", 9600)
@@ -1700,17 +1733,94 @@ class EngineerPanel(ctk.CTkToplevel):
                 return
 
             ctrl.connect()
-            self.after(0, self._log, "✔ Połączono z portem")
+            self.after(0, self._log, "✔ Port COM otwarty")
 
+            # ── 1. Czy tester w ogóle odpowiada ───────────────────────────
+            self.after(0, self._log, "")
+            self.after(0, self._log, "── 1. Identyfikacja testera (*IDN?) ──")
+            ident = ctrl.identify()
+
+            if ident:
+                self.after(0, self._log, f"✔ ODPOWIADA: {ident}")
+            else:
+                self.after(0, self._log, "✘ BRAK ODPOWIEDZI na *IDN?")
+                self.after(0, self._log, "")
+                self.after(0, self._log, "  To znaczy, że problem jest w łączu,")
+                self.after(0, self._log, "  nie w komendach. Sprawdź kolejno:")
+                self.after(0, self._log, "   • czy to właściwy port COM")
+                self.after(0, self._log, "   • baudrate w testerze (menu SYSTEM)")
+                self.after(0, self._log, "   • kabel: czy NULL-MODEM czy prosty")
+                self.after(0, self._log, "   • czy tester nie jest w trybie GPIB")
+                self.after(0, self._log, "   • czy inna aplikacja nie trzyma portu")
+                return
+
+            # ── 2. Bajt statusu ───────────────────────────────────────────
+            self.after(0, self._log, "")
+            self.after(0, self._log, f"── 2. Bajt statusu ({CMD_STATUS_BYTE}) ──")
+            stb = ctrl._read_status_byte()
+
+            if stb is not None:
+                self.after(0, self._log, f"✔ {describe_status_byte(stb)}")
+                self.after(0, self._log,
+                           "   PROCESS = test w toku, ALL_PASS/FAIL = wynik")
+            else:
+                self.after(0, self._log,
+                           "⚠ Brak liczbowej odpowiedzi — spróbuję *OPC?")
+                try:
+                    opc = ctrl._query(CMD_OPC, wait=0.4)
+                    self.after(0, self._log, f"   {CMD_OPC} → {opc!r} "
+                                             "(0 = w toku, 1 = zakończony)")
+                except Exception as e:
+                    self.after(0, self._log, f"   {CMD_OPC} nieudane: {e}")
+
+            # ── 3. Interlock ──────────────────────────────────────────────
+            self.after(0, self._log, "")
+            self.after(0, self._log, f"── 3. Interlock ({CMD_INTERLOCK}) ──")
+            interlock = ctrl.check_interlock()
+
+            if interlock is True:
+                self.after(0, self._log,
+                           "✘ INTERLOCK OTWARTY — tester nie wygeneruje "
+                           "napięcia. Sprawdź wtyczkę z tyłu i pokrywę.")
+            elif interlock is False:
+                self.after(0, self._log, "✔ Interlock zamknięty — test możliwy")
+            else:
+                self.after(0, self._log, "⚠ Nie udało się odczytać RI?")
+
+            # ── 4. Remote reset ───────────────────────────────────────────
+            self.after(0, self._log, "")
+            self.after(0, self._log, f"── 4. Remote reset ({CMD_REMOTE_RESET}) ──")
+            try:
+                rr = ctrl._query(CMD_REMOTE_RESET, wait=0.4).strip()
+                if rr.startswith("0"):
+                    self.after(0, self._log,
+                               "✘ Tester TRZYMANY W RESECIE (styki zwarte)")
+                elif rr.startswith("1"):
+                    self.after(0, self._log, "✔ Reset zwolniony")
+                else:
+                    self.after(0, self._log, f"⚠ Odpowiedź: {rr!r}")
+            except Exception as e:
+                self.after(0, self._log, f"⚠ {CMD_REMOTE_RESET} nieudane: {e}")
+
+            # ── 5. Dane ostatniego testu ──────────────────────────────────
+            self.after(0, self._log, "")
+            self.after(0, self._log, f"── 5. Dane testu ({CMD_TEST_DATA}) ──")
+            try:
+                td = ctrl._query(CMD_TEST_DATA, wait=0.6)
+                self.after(0, self._log, f"   {td!r}")
+                if td:
+                    self.after(0, self._log,
+                               "   Format: step, typ, status, meter1..3")
+            except Exception as e:
+                self.after(0, self._log, f"⚠ {CMD_TEST_DATA} nieudane: {e}")
+
+            # ── 6. RESET ──────────────────────────────────────────────────
+            self.after(0, self._log, "")
+            self.after(0, self._log, "── 6. RESET ──")
             resp = ctrl._send("RESET", wait=0.4)
-            ack = "✔ ACK" if b"\x06" in resp else "✘ NAK / brak odpowiedzi"
-            self.after(0, self._log, f"SEND >> RESET | {ack} | raw: {resp!r}")
-
-            status = ctrl._query("SA?", wait=0.5)
-            self.after(0, self._log, f"QUERY >> SA? | RESP << {status!r}")
             self.after(0, self._log,
-                       "   ↑ tę odpowiedź wpisz do config.json → "
-                       "hipot.status_idle_tokens")
+                       f"   raw: {resp!r}  ← brak odpowiedzi jest NORMALNY, "
+                       "RESET nie potwierdza")
 
         except Exception as e:
             log.exception("Błąd testu połączenia")
@@ -1718,7 +1828,8 @@ class EngineerPanel(ctk.CTkToplevel):
 
         finally:
             ctrl.disconnect()
-            self.after(0, self._log, "── Koniec testu ─────────────────────────")
+            self.after(0, self._log,
+                       "── Koniec testu ─────────────────────────")
 
     def _send_manual_command(self):
         cmd = self._manual_cmd_entry.get().strip()

@@ -45,6 +45,57 @@ from ted_client import build_hipot_payload, flush_spool, send_to_ted
 log = get_logger(__name__)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Podpisy pod werdyktem — co operator ma z tym zrobić
+# ══════════════════════════════════════════════════════════════════════════
+# Poprzednie "⛔ NIE ZWALNIAJ SZTUKI" było mylące, bo nie mówiło ANI dlaczego,
+# ANI co zrobić. Teraz każdy werdykt ma konkretne polecenie.
+#
+# Teksty można nadpisać bez przebudowy EXE — config.json:
+#     "ui": { "verdict_hints": { "FAIL": "Twój tekst..." } }
+RELEASE_HINTS = {
+    V.PASS: (
+        "Wynik pozytywny — sztuka może przejść do następnej operacji",
+        "success",
+    ),
+    V.FAIL: (
+        "Sztuka NIE przeszła testu — oznacz jako NOK i postępuj wg instrukcji "
+        "stanowiskowej",
+        "fail",
+    ),
+    V.ERROR: (
+        "Test nie został wykonany do końca — sprawdź stanowisko i POWTÓRZ test. "
+        "To nie jest wynik NOK sztuki",
+        "fail",
+    ),
+    V.UNKNOWN: (
+        "Tester nie zwrócił jednoznacznego wyniku — POWTÓRZ test. "
+        "Jeśli powtarza się, zgłoś inżynierowi",
+        "warning",
+    ),
+    V.ABORTED: (
+        "Test przerwany przed zakończeniem — POWTÓRZ test",
+        "warning",
+    ),
+}
+
+CSV_ERROR_HINT = (
+    "Wynik NIE został zapisany w logu — zgłoś przełożonemu przed dalszą pracą"
+)
+
+
+def _hint_for(overall: str, overrides: dict | None = None) -> tuple[str, str]:
+    """Zwraca (tekst, klucz_koloru) podpisu pod werdyktem."""
+    text, color_key = RELEASE_HINTS.get(overall, RELEASE_HINTS[V.UNKNOWN])
+
+    if overrides:
+        custom = overrides.get(overall)
+        if isinstance(custom, str) and custom.strip():
+            text = custom.strip()
+
+    return text, color_key
+
+
 class MainScreen(ctk.CTkFrame):
     def __init__(self, parent, hrid: str, user: dict, on_logout):
         super().__init__(parent, fg_color=COLORS["bg"])
@@ -57,6 +108,10 @@ class MainScreen(ctk.CTkFrame):
 
         self._active_profile = None
         self._active_profile_key = None
+
+        # Nadpisania tekstów podpowiedzi z config.json -> ui.verdict_hints
+        ui_cfg = load_config().get("ui", {})
+        self._hint_overrides = ui_cfg.get("verdict_hints") or {}
 
         self._build()
 
@@ -88,6 +143,17 @@ class MainScreen(ctk.CTkFrame):
             font=ctk.CTkFont(size=12),
             text_color=COLORS["muted"],
         ).grid(row=0, column=1, padx=20)
+
+        # Dokąd lecą wyniki. Przy produkcyjnych tabelach cicha kolejka
+        # oznaczałaby brakujące rekordy w TED, więc stan jest widoczny
+        # na stałe, a nie tylko w logu.
+        self.ted_label = ctk.CTkLabel(
+            header,
+            text="",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["muted"],
+        )
+        self.ted_label.grid(row=0, column=1, padx=20, sticky="e")
 
         ctk.CTkButton(
             header,
@@ -138,11 +204,13 @@ class MainScreen(ctk.CTkFrame):
         )
         self.result_label.grid(row=3, column=0, pady=(0, 2))
 
-        # Podpis pod werdyktem — mówi wprost, czy wolno zwolnić sztukę.
+        # Podpis pod werdyktem — mówi wprost, co operator ma zrobić.
         self.release_label = ctk.CTkLabel(
             body, text="",
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color=COLORS["muted"],
+            wraplength=640,
+            justify="center",
         )
         self.release_label.grid(row=4, column=0, pady=(0, 8))
 
@@ -221,6 +289,76 @@ class MainScreen(ctk.CTkFrame):
         )
         self.status_lbl.grid(row=8, column=0, pady=(8, 0))
 
+        self._refresh_ted_badge()
+        self._flush_ted_queue_on_start()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Widoczność integracji TED
+    # ══════════════════════════════════════════════════════════════════════
+    def _ted_target(self) -> tuple[bool, str, str]:
+        """Zwraca (włączone, opis_celu, klucz_koloru)."""
+        integrations = load_config().get("integrations", {})
+
+        if not integrations.get("ted_enabled", False):
+            return False, "TED: WYŁĄCZONY", "warning"
+
+        db_type = str(integrations.get("ted_db_type", "")).strip()
+
+        if db_type.upper() == "TEST":
+            # Praca produkcyjna zapisywana do tabel testowych to równie
+            # kosztowna pomyłka jak odwrotna — dlatego kolor ostrzegawczy.
+            return True, "TED: tabele TESTOWE", "warning"
+
+        return True, "TED: PRODUKCJA", "success"
+
+    def _pending_ted_count(self) -> int:
+        """Ile rekordów czeka w kolejce na wysyłkę."""
+        try:
+            from pathlib import Path
+            queue = Path("logs") / "ted_queue"
+            return len(list(queue.glob("*.xml"))) if queue.is_dir() else 0
+        except OSError:
+            return 0
+
+    def _refresh_ted_badge(self):
+        enabled, text, color_key = self._ted_target()
+        pending = self._pending_ted_count()
+
+        if pending:
+            text = f"{text}  |  ⏳ {pending} w kolejce"
+            color_key = "fail" if pending > 5 else "warning"
+
+        self.ted_label.configure(text=text, text_color=COLORS[color_key])
+
+    def _flush_ted_queue_on_start(self):
+        """
+        Próba wysłania zaległości przy starcie ekranu.
+
+        Bez tego rekordy z poprzedniej zmiany mogłyby czekać na dysku
+        do pierwszego testu — a przy produkcyjnych tabelach to są
+        brakujące dane w TED.
+        """
+        enabled, _, _ = self._ted_target()
+
+        if not enabled:
+            return
+
+        def worker():
+            try:
+                result = flush_spool(log_dir="logs")
+                if result.get("sent"):
+                    log.info("TED: wysłano %d zaległych rekordów przy starcie.",
+                             result["sent"])
+            except Exception as e:
+                log.warning("TED: flush przy starcie nieudany: %s", e)
+            finally:
+                try:
+                    self.after(0, self._refresh_ted_badge)
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _detail_cell(self, parent, label, value, col):
         f = ctk.CTkFrame(parent, fg_color="transparent")
         f.grid(row=2, column=col, padx=8, pady=12, sticky="ew")
@@ -279,13 +417,22 @@ class MainScreen(ctk.CTkFrame):
     # SN / profil
     # ══════════════════════════════════════════════════════════════════════
     def _on_sn_change(self):
+        """
+        Reaguje na zmianę treści pola SN.
+
+        UWAGA: ta metoda dotyka WYŁĄCZNIE etykiety profilu. Nie wolno jej
+        czyścić obszaru wyniku — poprzednia wersja robiła tu
+        gnd_frame.grid_remove(), więc po zakończonym teście pole z wynikiem
+        Ground Bond znikało w momencie, gdy operator dotknął pola SN
+        (a _restore_ui ustawia tam fokus). Wynik ostatniego testu musi zostać
+        na ekranie do startu NASTĘPNEGO testu — czyści go _reset_display().
+        """
         sn = self.sn_entry.get().strip()
 
         if len(sn) < 4:
             self.profile_label.configure(text="Profil: —", text_color=COLORS["muted"])
             self._active_profile = None
             self._active_profile_key = None
-            self.gnd_frame.grid_remove()
             return
 
         key, profile = resolve_profile_for_sn(sn)
@@ -496,7 +643,7 @@ class MainScreen(ctk.CTkFrame):
             self.after(
                 0, self._show_result,
                 sn, hipot_result, gnd_result, ted_status,
-                csv_path, csv_error, overall,
+                csv_path, csv_error, overall, expects_gnd,
             )
 
         except Exception as e:
@@ -527,15 +674,30 @@ class MainScreen(ctk.CTkFrame):
     def _show_fatal(self, sn: str, message: str):
         """Awaria przed uzyskaniem jakiegokolwiek wyniku."""
         self._set_verdict_label(*_display(V.ERROR))
-        self.release_label.configure(
-            text="⛔ NIE ZWALNIAJ SZTUKI", text_color=COLORS["fail"]
-        )
+        self._set_hint(V.ERROR)
         self._set_status(f"❌ {message}", COLORS["fail"])
 
         messagebox.showerror(
             "Błąd testu",
-            f"SN: {sn}\n\n{message}\n\nSztuki nie wolno zwolnić.",
+            f"SN: {sn}\n\n{message}\n\n"
+            "Test nie został wykonany do końca — powtórz go po usunięciu "
+            "przyczyny. To nie jest wynik NOK sztuki.",
             parent=self,
+        )
+
+    def _set_hint(self, overall: str, custom_text: str | None = None,
+                  custom_color: str | None = None):
+        """Podpis pod dużą etykietą — mówi operatorowi, co zrobić."""
+        if custom_text is not None:
+            self.release_label.configure(
+                text=custom_text,
+                text_color=COLORS.get(custom_color or "fail", COLORS["fail"]),
+            )
+            return
+
+        text, color_key = _hint_for(overall, self._hint_overrides)
+        self.release_label.configure(
+            text=text, text_color=COLORS.get(color_key, COLORS["muted"])
         )
 
     def _ted_suffix(self, ted_status: dict | None) -> str:
@@ -559,21 +721,14 @@ class MainScreen(ctk.CTkFrame):
         csv_path: str,
         csv_error: str,
         overall: str,
+        expects_gnd: bool = False,
     ):
         ted_suffix = self._ted_suffix(ted_status)
 
         # ── 1. WERDYKT ZBIORCZY steruje dużą etykietą ─────────────────────
         text, color = _display(overall)
         self._set_verdict_label(text, color)
-
-        if V.is_releasable(overall):
-            self.release_label.configure(
-                text="Sztuka może iść dalej", text_color=COLORS["success"]
-            )
-        else:
-            self.release_label.configure(
-                text="⛔ NIE ZWALNIAJ SZTUKI", text_color=COLORS["fail"]
-            )
+        self._set_hint(overall)
 
         # ── 2. Szczegóły HiPot ────────────────────────────────────────────
         hipot_v = V.step_verdict(hipot)
@@ -585,7 +740,7 @@ class MainScreen(ctk.CTkFrame):
         self.time_lbl.configure(text=f"{hipot.get('time', '—')} s")
 
         # ── 3. Szczegóły Ground Bond ──────────────────────────────────────
-        if gnd is not None or self._expects_gnd:
+        if gnd is not None or expects_gnd:
             self.gnd_frame.grid()
 
             if gnd is None:
@@ -603,6 +758,14 @@ class MainScreen(ctk.CTkFrame):
 
                 if gnd.get("fields_ambiguous"):
                     log.warning("GND: kolejność pól prąd/rezystancja niepotwierdzona.")
+
+                # PASS blisko limitu — operator ma to widzieć, zanim
+                # następna sztuka wyjdzie FAIL.
+                if gnd.get("marginal") and gnd_v == V.PASS:
+                    self.gnd_result_lbl.configure(
+                        text="✔ GND PASS (blisko limitu)",
+                        text_color=COLORS["warning"],
+                    )
         else:
             self.gnd_frame.grid_remove()
 
@@ -614,9 +777,7 @@ class MainScreen(ctk.CTkFrame):
 
         # ── 5. Zapis lokalny — awaria musi być widoczna ───────────────────
         if csv_error:
-            self.release_label.configure(
-                text="⛔ WYNIK NIE ZOSTAŁ ZAPISANY", text_color=COLORS["fail"]
-            )
+            self._set_hint(overall, custom_text=CSV_ERROR_HINT, custom_color="fail")
             self._set_status(f"❌ {csv_error}", COLORS["fail"])
 
             messagebox.showerror(
@@ -632,15 +793,19 @@ class MainScreen(ctk.CTkFrame):
         # ── 6. Wynik niejednoznaczny wymaga potwierdzenia ─────────────────
         if overall in (V.UNKNOWN, V.ERROR):
             messagebox.showwarning(
-                "Wynik niejednoznaczny",
-                f"SN: {sn}\nWerdykt: {overall}\n\n"
+                "Test nie dał wyniku",
+                f"SN: {sn}\n\n"
                 f"{detail or 'Tester nie zwrócił jednoznacznego wyniku.'}\n\n"
-                "Sztuki nie wolno zwolnić. Powtórz test lub zgłoś do inżyniera.",
+                "To NIE znaczy, że sztuka jest zła — znaczy, że test się nie "
+                "udał.\n\nPowtórz test. Jeśli powtarza się na kolejnych "
+                "sztukach, zgłoś inżynierowi.",
                 parent=self,
             )
 
         if ted_status and ted_status.get("queued"):
             log.warning("TED: rekord SN=%s czeka w kolejce na wysyłkę.", sn)
+
+        self._refresh_ted_badge()
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -1,23 +1,49 @@
-# Sekrety
+# ── Wrażliwe — NIGDY do repo ────────────────────────────────────────────────
+# Klucz funkcji TED. Jeśli ten plik kiedykolwiek trafił do repo, klucz należy
+# uznać za ujawniony i poprosić IT o rotację.
+# UWAGA: builder KOPIUJE .env do dist/ (TED jest aktywny), więc folder
+# dist/ też nie może iść do repo ani do nikogo poza stanowiskiem.
 .env
+.env.*
+!.env.example
 
-# Wirtualne środowisko
+# Konfiguracja stanowiska zawiera HRID-y operatorów i nastawy testu.
+# Wzorzec bez danych osobowych jest w config.example.json.
+config.json
+config.json.bak
+config.json.tmp
+config.broken_*.json
+
+# ── Wyniki testów i logi ────────────────────────────────────────────────────
+logs/
+*.log
+hipot_log_*.csv
+
+# ── Generowane przez build ──────────────────────────────────────────────────
+dist/
+build/
+*.spec
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ── Środowisko i IDE ───────────────────────────────────────────────────────
 .venv/
 venv/
-
-# Cache Pythona
-__pycache__/
-*.pyc
-
-# PyInstaller
-build/
-dist/
-*.spec
-
-# IDE
+env/
 .idea/
 .vscode/
+*.swp
 
-# Logi i dane lokalne
-*.log
-*.csv
+# ── Kopie i śmieci ─────────────────────────────────────────────────────────
+# Pliki pobrane z przeglądarki — builder w trybie ścisłym ich nie przyjmie,
+# ale nie ma po co trzymać ich w repo.
+*(1).py
+*(2).py
+*(3).py
+*(4).py
+*(5).py
+*.bak
+*.orig
+_archiwum/
+_to_delete/

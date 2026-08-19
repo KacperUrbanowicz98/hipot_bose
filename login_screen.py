@@ -122,7 +122,16 @@ class LoginScreen(ctk.CTkFrame):
         if user:
             self.error_label.configure(text="")
             log.info("Zalogowano: %s (%s)", hrid, user.get("name", ""))
-            audit(f"{hrid} {user.get('name', '')}".strip(), "LOGIN", "")
+            integrations = self.config_data.get("integrations", {})
+            db_type = str(integrations.get("ted_db_type", "")).strip()
+            target = "PRODUKCJA" if not db_type else db_type
+
+            audit(
+                f"{hrid} {user.get('name', '')}".strip(),
+                "LOGIN",
+                f"TED={'ON' if integrations.get('ted_enabled') else 'OFF'} "
+                f"cel={target}",
+            )
             self.on_login_success(hrid, user)
         else:
             self._show_error(f"Nieznany HRID: {hrid}")

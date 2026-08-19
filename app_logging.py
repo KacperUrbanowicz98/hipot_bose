@@ -78,9 +78,14 @@ def default_log_dir() -> Path:
 
 # ── Konfiguracja ───────────────────────────────────────────────────────────
 def setup_logging(log_dir: str | os.PathLike | None = None,
-                  level: int = logging.INFO) -> logging.Logger:
+                  level: int = logging.DEBUG) -> logging.Logger:
     """
     Konfiguruje logowanie aplikacji. Wołać raz, na starcie main.py.
+
+    Domyślny poziom DEBUG: build jest --windowed, więc plik logu jest JEDYNYM
+    źródłem diagnostyki. Cały ruch RS-232 (komendy, surowe odpowiedzi RD n?)
+    ląduje w logs/app.log — to jest to, co trzeba wysłać przy zgłoszeniu.
+    Objętość: ~40 linii na test, rotacja 5 MB x 10 plików.
 
     Bezpieczne przy wielokrotnym wywołaniu.
     """

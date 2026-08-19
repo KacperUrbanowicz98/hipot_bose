@@ -188,9 +188,13 @@ class RelayController:
             if line.startswith(expected_prefixes):
                 return line
 
+            # Linie informacyjne firmware — logujemy i czekamy dalej na werdykt.
+            # WARN:PE_VERIFY_FAIL:n leci z ESP przy każdej nieudanej próbie
+            # wewnętrznej; to nie jest odpowiedź końcowa.
             if (line == "READY"
                     or line.startswith("STATE:")
-                    or line.startswith("WATCHDOG:")):
+                    or line.startswith("WATCHDOG:")
+                    or line.startswith("WARN:")):
                 continue
 
             continue
@@ -343,6 +347,15 @@ class RelayController:
         return ok_count == samples
 
     # ── Przełączanie ───────────────────────────────────────────────────────
+    #: Firmware ESP robi do 3 własnych prób potwierdzenia CHECK_PIN, a przy
+    #: niepowodzeniu jeszcze safeReturnToHipot(). Zmierzone z arduino2.txt:
+    #:   happy path (OK:PE)            ~0.67 s
+    #:   3 nieudane próby + powrót     ~3.34 s
+    #: Poprzednie 2.0 s kończyło odczyt w połowie retry ESP i aplikacja
+    #: widziała ostatnią linię WARN:PE_VERIFY_FAIL zamiast finalnego werdyktu.
+    SWITCH_READ_TIMEOUT_S = 4.5
+    RESCUE_READ_TIMEOUT_S = 5.0
+
     def _switch(self, target: str) -> bool:
         """
         Wspólna logika przełączania z retry/reconnect/rescue.
@@ -364,7 +377,7 @@ class RelayController:
                     target,
                     wait=0.90,
                     expected_prefixes=(ok_prefix, "ERR:RELAY_FAIL"),
-                    read_timeout=2.0,
+                    read_timeout=self.SWITCH_READ_TIMEOUT_S,
                 )
 
                 last_resp = resp
@@ -416,7 +429,7 @@ class RelayController:
                 target,
                 wait=1.0,
                 expected_prefixes=(ok_prefix, "ERR:RELAY_FAIL"),
-                read_timeout=2.5,
+                read_timeout=self.RESCUE_READ_TIMEOUT_S,
             )
 
             last_resp = resp

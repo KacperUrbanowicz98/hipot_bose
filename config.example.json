@@ -1,0 +1,87 @@
+{
+    "users": {
+        "12101333": {
+            "name": "Kacper Urbanowicz",
+            "role": "engineer"
+        },
+        "00000001": {
+            "name": "Operator Przykladowy",
+            "role": "operator"
+        }
+    },
+    "profiles": {
+        "3KV": {
+            "name": "Bose 3 kV ACW",
+            "type": "ACW",
+            "voltage": 3.0,
+            "hi_limit": 10.0,
+            "lo_limit": 0.0,
+            "ramp": 1.0,
+            "dwell": 2.0,
+            "frequency": 0,
+            "ground_bond": null
+        },
+        "1_5KV_GND": {
+            "name": "Bose 1.5 kV ACW + Ground Bond",
+            "type": "ACW",
+            "voltage": 1.5,
+            "hi_limit": 8.0,
+            "lo_limit": 0.0,
+            "ramp": 1.0,
+            "dwell": 2.0,
+            "frequency": 0,
+            "ground_bond": {
+                "current": 25.0,
+                "hi_limit": 100.0,
+                "lo_limit": 0.0,
+                "dwell": 1.0,
+                "offset": 0.0,
+                "frequency": 1
+            }
+        }
+    },
+    "sn_prefix_map": {
+        "F10001": "3KV",
+        "084999": "1_5KV_GND"
+    },
+    "serial": {
+        "port": "COM11",
+        "baudrate": 9600,
+        "timeout": 3,
+        "relay_port": "COM4",
+        "relay_baudrate": 115200
+    },
+    "integrations": {
+        "ted_enabled": true,
+        "ted_db_type": "",
+        "ted_required": false
+    },
+    "hipot": {
+        "result_margin_s": 10.0,
+        "gnd_result_margin_s": 6.0,
+        "result_poll_interval_s": 0.3,
+        "result_poll_query_wait_s": 0.5,
+        "sweeps_before_fallback": 3,
+        "relay_switch_delay_s": 1.0,
+        "require_relay_for_gnd": true,
+        "gnd_field_order": "current_first",
+        "gnd_current_tolerance": 0.35,
+        "status_query": "TD?",
+        "status_busy_tokens": [],
+        "status_idle_tokens": [],
+        "check_interlock": true,
+        "status_check_every": 3,
+        "verify_with_status_byte": false
+    },
+    "ui": {
+        "verdict_hints": {}
+    },
+    "security": {
+        "engineer_password_hash": "",
+        "engineer_password_salt": "",
+        "engineer_password_iterations": 240000,
+        "must_change_password": true,
+        "max_password_attempts": 5,
+        "lockout_seconds": 60
+    }
+}

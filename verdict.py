@@ -26,6 +26,49 @@ Nie ma tu żadnego "domyślnie przepuść".
 from __future__ import annotations
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# STATUSY ZWRACANE PRZEZ SLAUGHTER 4320
+# ══════════════════════════════════════════════════════════════════════════
+# Tester NIE zwraca słowa "Fail". Zwraca OPISOWY status, np. HI-Limit / OFL.
+# Potwierdzone dwoma niezależnymi źródłami:
+#
+#   1. logs/hipot_log z 2026-08-17 ze stanowiska:
+#        hipot_result = Pass | HI-Limit | OFL
+#        gnd_result   = Pass | HI-Limit
+#
+#   2. Slaughter 4000 Series Manual, "Failure Mode Displays" (str. 18-19):
+#        HI-Lmt, LO-Lmt, OFL  dla ACW / DCW / IR / GND
+#      oraz *STB? BIT 2 = ABORT
+#
+# Wersja 1.1.1 rozpoznawała wyłącznie 'Pass'/'Fail', więc każda sztuka
+# NIEZALICZONA nie była w ogóle akceptowana przez polling — leciał timeout
+# i werdykt ERROR zamiast FAIL. To najważniejsza poprawka 1.1.2.
+#
+# Warianty pisowni: RS-232 oddaje 'HI-Limit', wyświetlacz pokazuje 'HI-Lmt'.
+# Trzymamy oba, żeby nie zależeć od wersji firmware.
+
+PASS_TOKENS = ("pass", "passed")
+
+FAIL_TOKENS = (
+    # ogólne
+    "fail", "failed", "nok",
+    # ACW / DCW / IR / GND — przekroczenie limitu górnego
+    "hi-limit", "hi-lmt", "hilimit", "hi limit", "hilmt",
+    # przekroczenie limitu dolnego (typowo brak kontaktu z DUT)
+    "lo-limit", "lo-lmt", "lolimit", "lo limit", "lolmt",
+    # przekroczenie zakresu pomiarowego: zwarcie albo przeskok
+    "ofl", "overflow",
+    # spotykane w innych modelach serii
+    "breakdown", "short", "arc", "arc-fail", "ramp-fail", "open",
+)
+
+#: Przerwanie testu to NIE zła sztuka — osobna kategoria.
+ABORT_TOKENS = ("abort", "aborted")
+
+#: Wszystkie tokeny, po których da się rozpoznać pole werdyktu w rekordzie RD.
+ALL_VERDICT_TOKENS = PASS_TOKENS + FAIL_TOKENS + ABORT_TOKENS
+
+
 # ── Werdykty ───────────────────────────────────────────────────────────────
 PASS = "PASS"
 FAIL = "FAIL"
@@ -61,11 +104,24 @@ def norm(value) -> str:
 
 
 def is_pass(value) -> bool:
-    return norm(value) in ("pass", "passed", "ok")
+    return norm(value) in PASS_TOKENS
 
 
 def is_fail(value) -> bool:
-    return norm(value) in ("fail", "failed", "nok")
+    """
+    True dla KAŻDEGO statusu oznaczającego niezaliczenie — także opisowego
+    (HI-Limit, LO-Limit, OFL), bo tester nie zwraca słowa 'Fail'.
+    """
+    return norm(value) in FAIL_TOKENS
+
+
+def is_abort(value) -> bool:
+    return norm(value) in ABORT_TOKENS
+
+
+def is_verdict_token(value) -> bool:
+    """Czy pole rekordu RD jest polem statusu testu."""
+    return norm(value) in ALL_VERDICT_TOKENS
 
 
 def has_value(value) -> bool:
@@ -95,6 +151,10 @@ def step_verdict(step: dict | None) -> str:
 
     if is_pass(result):
         return PASS
+
+    # Abort sprawdzany PRZED fail — przerwany test to nie zła sztuka.
+    if is_abort(result):
+        return ABORTED
 
     if is_fail(result):
         return FAIL
